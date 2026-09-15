@@ -1,0 +1,8 @@
+project_id = "pdf-note"
+
+[functions.library]
+# The handler verifies JWTs with Auth.getUser, including modern signing keys.
+verify_jwt = false
+
+[auth]
+enable_signup = false

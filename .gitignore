@@ -1,0 +1,8 @@
+.venv/
+.tools/
+.env*
+!.env.example
+.local/
+__pycache__/
+test-results/
+supabase/.temp/
