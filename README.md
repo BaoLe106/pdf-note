@@ -85,6 +85,9 @@ python -m pip install playwright pymupdf
 python -m playwright install chromium
 # Set PDF_NOTE_PASSWORD in your terminal environment, then:
 python tests/browser_smoke.py
+# Safari engine / touch viewport:
+python -m playwright install webkit
+python tests/mobile_webkit.py
 ```
 
 Set `PDF_NOTE_TEST_OCR=1` to include a real on-device OCR check; optionally set `PDF_NOTE_TEST_URL` to test the deployed site. The suite creates a multilingual test PDF, exercises the live API, then deletes its test project. Screenshots go to ignored `test-results/`.

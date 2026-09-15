@@ -6,6 +6,7 @@ const config = window.PDF_NOTE_CONFIG;
 const client = config.supabaseUrl && config.supabaseAnonKey ? createClient(config.supabaseUrl, config.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } }) : null;
 const state = { projects: [], project: null, pdf: null, notes: [], page: 1, zoom: 1, selection: null, editing: null, ocr: {}, render: 0, busy: false, loading: false, session: null };
 let renderTask, textTask, saveTimer, selectionTimer, toastTimer, resizeTimer, documentGeneration = 0;
+let positionQueue = Promise.resolve();
 const formatSize = n => `${(n / 1048576).toFixed(1)} MB`;
 const date = value => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4500); }
@@ -88,6 +89,7 @@ $('file-input').onchange = async () => {
     if (!new TextDecoder().decode(bytes.slice(0, 1024)).includes('%PDF-')) throw new Error('This file is not a PDF.');
     preview = await pdfjs.getDocument({ data: bytes }).promise;
     const form = new FormData(); form.append('file', file); form.append('page_count', String(preview.numPages));
+    await preview.destroy(); preview = null;
     $('upload-status').textContent = 'Uploading your textbook. Keep this page open…';
     const { project } = await api('upload', form);
     await loadProjects(); await openProject(project); toast('Your book has a home.');
@@ -104,6 +106,7 @@ async function openProject(project) {
     const pdf = await loading.promise;
     if (generation !== documentGeneration) { await pdf.destroy(); return; }
     state.project = project; state.pdf = pdf; state.notes = notes; state.ocr = Object.fromEntries(ocr.map(p => [p.page, p.words]));
+    $('save-status').textContent = 'All changes saved';
     state.page = Math.min(project.current_page, pdf.numPages); state.zoom = project.zoom || 1; $('note-search').value = '';
     renderNotes(); await renderPage();
   } catch (error) { if (generation === documentGeneration) $('reader-message').textContent = message(error); }
@@ -153,18 +156,26 @@ async function renderPage() {
 async function changePage(value) {
   if (!state.pdf || state.busy) return;
   state.page = Math.max(1, Math.min(state.pdf.numPages, Math.trunc(Number(value)) || 1)); $('pdf-scroll').scrollTo(0, 0);
-  await renderPage(); schedulePosition();
+  schedulePosition(); await renderPage();
 }
 $('prev-page').onclick = () => changePage(state.page - 1); $('next-page').onclick = () => changePage(state.page + 1); $('page-input').onchange = () => changePage($('page-input').value);
-async function zoom(value) { if (state.busy || !state.pdf) return; state.zoom = Math.max(.6, Math.min(2.5, value)); await renderPage(); schedulePosition(); }
+async function zoom(value) { if (state.busy || !state.pdf) return; state.zoom = Math.max(.6, Math.min(2.5, value)); schedulePosition(); await renderPage(); }
 $('zoom-in').onclick = () => zoom(state.zoom + .2); $('zoom-out').onclick = () => zoom(state.zoom - .2); $('zoom-fit').onclick = () => zoom(1);
 function schedulePosition() { clearTimeout(saveTimer); $('save-status').textContent = 'Saving position…'; saveTimer = setTimeout(() => flushPosition().catch(e => toast(message(e))), 700); }
-async function flushPosition() {
-  clearTimeout(saveTimer); if (!state.project) return;
+function flushPosition() {
+  clearTimeout(saveTimer); if (!state.project) return Promise.resolve();
   const project = state.project; const page = state.page, zoom = state.zoom;
-  if (project.current_page === page && project.zoom === zoom) return;
-  try { await api('position', { id: project.id, page, zoom }); project.current_page = page; project.zoom = zoom; $('save-status').textContent = 'All changes saved'; }
-  catch (e) { $('save-status').textContent = 'Position not saved · retry by changing page'; throw e; }
+  const isCurrent = () => state.project === project && state.page === page && state.zoom === zoom;
+  const save = async () => {
+    try {
+      if (project.current_page !== page || project.zoom !== zoom) {
+        await api('position', { id: project.id, page, zoom }); project.current_page = page; project.zoom = zoom;
+      }
+      if (isCurrent()) $('save-status').textContent = 'All changes saved';
+    } catch (e) { if (isCurrent()) $('save-status').textContent = 'Position not saved · retry by changing page'; throw e; }
+  };
+  positionQueue = positionQueue.catch(() => {}).then(save);
+  return positionQueue;
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) flushPosition().catch(() => {}); });
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (state.pdf && !state.busy) renderPage().catch(e => toast(message(e))); }, 220); });
@@ -190,6 +201,11 @@ document.addEventListener('selectionchange', () => { clearTimeout(selectionTimer
 $('text-layer').addEventListener('pointerup', () => { clearTimeout(selectionTimer); selectionTimer = setTimeout(captureSelection, 60); });
 $('pdf-scroll').addEventListener('scroll', hideSelection, { passive: true });
 $('selection-popover').addEventListener('pointerdown', e => e.preventDefault());
+$('selection-popover').addEventListener('pointerup', e => {
+  // WebKit suppresses the synthetic click after a cancelled touch pointerdown.
+  // Act on pointerup so the selection stays intact and touch actions still work.
+  if (e.pointerType !== 'mouse') { e.preventDefault(); e.target.closest('button')?.click(); }
+});
 $('close-selection').onclick = () => { window.getSelection().removeAllRanges(); hideSelection(); };
 $('copy-selection').onclick = async () => { if (!state.selection) return; try { await navigator.clipboard.writeText(state.selection.quote); toast('Passage copied'); } catch { toast('Use your browser’s Copy action to copy this passage.'); } };
 $('note-selection').onclick = () => { if (state.selection) editNote(null, state.selection); };
