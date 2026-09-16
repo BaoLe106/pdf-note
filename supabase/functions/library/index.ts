@@ -4,6 +4,9 @@ const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPAB
   auth: { persistSession: false, autoRefreshToken: false },
 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_PDF_BYTES = 100 * 1048576;
+const PART_BYTES = 8 * 1048576;
+const partPaths = (project: any): string[] => Array.from({ length: project.storage_parts }, (_, i) => `${project.storage_path}/${i}.part`);
 class HttpError extends Error { constructor(message: string, public status = 400) { super(message); } }
 const requireId = (value: unknown) => { if (typeof value !== 'string' || !UUID.test(value)) throw new HttpError('Invalid identifier.'); return value; };
 function check(result: { error: any }) { if (result.error) throw new Error(result.error.message); }
@@ -41,6 +44,19 @@ Deno.serve(async req => {
     const owner = await supabase.from('app_owner').select('user_id').eq('user_id', user.id).maybeSingle();
     check(owner); if (!owner.data) throw new HttpError('This library is private.', 403);
     const action = new URL(req.url).searchParams.get('action');
+    if (action === 'upload-part') {
+      if (Number(req.headers.get('content-length')) > PART_BYTES + 65536) throw new HttpError('Upload part is too large.', 413);
+      const form = await req.formData();
+      const project = await ownedProject(form.get('id'), user.id);
+      if (project.upload_state !== 'uploading' || !project.storage_parts) throw new HttpError('This upload is already complete.', 409);
+      const index = Number(form.get('index')), file = form.get('file');
+      if (!Number.isInteger(index) || index < 0 || index >= project.storage_parts) throw new HttpError('Invalid upload part.');
+      const expectedSize = Math.min(PART_BYTES, project.size_bytes - index * PART_BYTES);
+      if (!(file instanceof File) || file.size !== expectedSize) throw new HttpError('Upload part has an incorrect size.');
+      if (index === 0 && !(await file.slice(0, 1024).text()).includes('%PDF-')) throw new HttpError('This file is not a PDF.');
+      check(await supabase.storage.from('pdf-parts').upload(partPaths(project)[index], file, { contentType: 'application/octet-stream', upsert: true }));
+      return json({ ok: true });
+    }
     if (action === 'upload') {
       if (Number(req.headers.get('content-length')) > 41 * 1048576) throw new HttpError('Choose a PDF smaller than 40 MB.', 413);
       const form = await req.formData(), file = form.get('file');
@@ -57,9 +73,38 @@ Deno.serve(async req => {
     const raw = await req.text(); if (raw.length > 2_000_000) throw new HttpError('Request is too large.', 413);
     let body: any; try { body = JSON.parse(raw || '{}'); } catch { throw new HttpError('Invalid JSON.'); }
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError('Invalid request.');
+    if (action === 'begin-upload') {
+      if (!Number.isSafeInteger(body.size_bytes) || body.size_bytes <= 0 || body.size_bytes > MAX_PDF_BYTES) throw new HttpError('This PDF exceeds the 100 MB limit. Please choose a smaller file.', 413);
+      if (typeof body.title !== 'string' || !body.title.trim() || body.title.length > 250) throw new HttpError('Invalid document title.');
+      const pageCount = validPage(body.page_count, 100000), id = crypto.randomUUID();
+      // Reserve the full document size before accepting any parts. The existing
+      // transactional library quota includes these pending uploads.
+      const result = await supabase.from('projects').insert({ id, owner_id: user.id, title: body.title.trim(), storage_path: `${user.id}/${id}`, size_bytes: body.size_bytes, page_count: pageCount, storage_parts: Math.ceil(body.size_bytes / PART_BYTES), upload_state: 'uploading' }).select().single();
+      if (result.error?.message.includes('Library storage')) throw new HttpError(result.error.message, 409);
+      check(result); return json({ project: result.data, part_bytes: PART_BYTES }, 201);
+    }
+    if (action === 'complete-upload') {
+      const project = await ownedProject(body.id, user.id);
+      if (project.upload_state === 'ready') return json({ project });
+      const files = await supabase.storage.from('pdf-parts').list(project.storage_path, { limit: 100 }); check(files);
+      for (let i = 0; i < project.storage_parts; i++) {
+        const file = files.data?.find(f => f.name === `${i}.part`);
+        if (!file || Number(file.metadata?.size) !== Math.min(PART_BYTES, project.size_bytes - i * PART_BYTES)) throw new HttpError('The PDF upload is incomplete. Please try again.', 409);
+      }
+      const result = await supabase.from('projects').update({ upload_state: 'ready', updated_at: new Date().toISOString() }).eq('id', project.id).eq('owner_id', user.id).select().single();
+      check(result); return json({ project: result.data });
+    }
     if (action === 'projects') return json({ projects: await allRows('projects', 'owner_id', user.id) });
     if (action === 'open') {
       const project = await ownedProject(body.id, user.id);
+      if (project.upload_state !== 'ready') throw new HttpError('This upload was interrupted. Delete this document and import the PDF again.', 409);
+      if (project.storage_parts) {
+        const [signed, notes, ocr] = await Promise.all([supabase.storage.from('pdf-parts').createSignedUrls(partPaths(project), 3600), allRows('notes', 'project_id', project.id), allRows('ocr_pages', 'project_id', project.id)]);
+        check(signed);
+        const parts = partPaths(project).map(path => signed.data?.find(p => p.path === path)?.signedUrl);
+        if (parts.some(url => !url)) throw new Error('Could not sign PDF parts.');
+        return json({ parts, size_bytes: project.size_bytes, part_bytes: PART_BYTES, notes, ocr });
+      }
       const [signed, notes, ocr] = await Promise.all([supabase.storage.from('pdfs').createSignedUrl(project.storage_path, 3600), allRows('notes', 'project_id', project.id), allRows('ocr_pages', 'project_id', project.id)]);
       check(signed); return json({ url: signed.data!.signedUrl, notes, ocr });
     }
@@ -70,7 +115,7 @@ Deno.serve(async req => {
     }
     if (action === 'delete-project') {
       const project = await ownedProject(body.id, user.id);
-      check(await supabase.storage.from('pdfs').remove([project.storage_path]));
+      check(await supabase.storage.from(project.storage_parts ? 'pdf-parts' : 'pdfs').remove(project.storage_parts ? partPaths(project) : [project.storage_path]));
       check(await supabase.from('projects').delete().eq('id', project.id).eq('owner_id', user.id)); return json({ ok: true });
     }
     if (action === 'save-note') {

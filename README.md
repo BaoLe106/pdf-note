@@ -45,7 +45,10 @@ flowchart LR
 
 The deployed Supabase organization uses Free, and GitHub Pages serves the public source repository. The PDFs and notes remain private. No paid services or OCR APIs are used.
 
-- Application upload limit: **40 MiB per PDF**.
+- Application upload limit: **100 MiB per PDF** (shown as 100 MB). Larger files are rejected before reading or uploading, with an error popup.
+- An upload progress bar shows the filename, percentage, and checking/uploading/saving stages. Transferred bytes drive the percentage for both regular and large uploads.
+- PDFs larger than 40 MiB upload as private 8 MiB parts through the Edge Function. The browser reassembles them when opening; each stored object stays within Supabase Free's 50 MB object limit. Existing PDFs keep their original storage format.
+- Large uploads reserve their full size against the library quota. Failed uploads are cleaned up; if a tab closes mid-upload, the interrupted project remains visible and can be deleted to reclaim storage.
 - Library PDF cap: **950 MiB**, enforced transactionally by PostgreSQL, below the 1 GB Storage allocation.
 - Notes: 20,000 characters per passage and 50,000 per note; OCR: 10,000 words per page.
 - Supabase Free includes a 500 MB database and 1 GB Storage; bandwidth and function quotas also apply. Free projects can pause after inactivity, requiring restoration from the dashboard. Check [current Supabase plan limits](https://supabase.com/pricing).
@@ -64,6 +67,7 @@ Backend source:
 
 ```text
 supabase/migrations/202609150001_library.sql
+supabase/migrations/202609150002_large_pdfs.sql
 supabase/functions/library/index.ts
 supabase/config.toml
 ```
@@ -74,7 +78,7 @@ Deploy an updated function with an authenticated Supabase CLI:
 supabase functions deploy library --project-ref etyubwsyrfzteckfmhtt --use-api
 ```
 
-The initial migration has already been applied. Do not rerun it on the existing database; add a new migration for schema changes. The deployed owner was provisioned through the Auth Admin API and inserted into `app_owner`. The account password is intentionally absent from this repository.
+Both migrations have already been applied. Do not rerun them on the existing database; add a new migration for schema changes. The deployed owner was provisioned through the Auth Admin API and inserted into `app_owner`. The account password is intentionally absent from this repository.
 
 ## Verification
 
@@ -91,6 +95,8 @@ python tests/mobile_webkit.py
 ```
 
 Set `PDF_NOTE_TEST_OCR=1` to include a real on-device OCR check; optionally set `PDF_NOTE_TEST_URL` to test the deployed site. The suite creates a multilingual test PDF, exercises the live API, then deletes its test project. Screenshots go to ignored `test-results/`.
+
+`python tests/large_upload.py` checks the 100 MiB boundary, over-limit popup, large-upload retry, byte-for-byte signed downloads, and reopening notes. It transfers several hundred MB against the configured backend and removes its test project afterward.
 
 The checks cover login, PDF upload/rendering, Chinese selection, the selection popover, Unicode notes, saved highlights/page/zoom, editing, Markdown export, mobile layouts, token refresh, deletion, and logout. Browser emulation checks narrow viewports; it does not replace testing on a physical iPhone.
 

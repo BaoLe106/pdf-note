@@ -8,17 +8,28 @@ const state = { projects: [], project: null, pdf: null, notes: [], page: 1, zoom
 let renderTask, textTask, saveTimer, selectionTimer, toastTimer, resizeTimer, documentGeneration = 0;
 let positionQueue = Promise.resolve();
 const formatSize = n => `${(n / 1048576).toFixed(1)} MB`;
+const MAX_PDF_BYTES = 100 * 1048576;
 const date = value => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4500); }
 function message(error) { return error?.message || 'Something went wrong. Please try again.'; }
-async function api(action, body = {}) {
+async function api(action, body = {}, onUploadProgress = null) {
   if (!client) throw new Error('The library is being set up. Please try again after deployment.');
   const { data: { session } } = await client.auth.getSession();
   if (!session) throw new Error('Please sign in again.');
   const isFile = body instanceof FormData;
-  const invoke = async token => fetch(`${config.supabaseUrl}/functions/v1/library?action=${encodeURIComponent(action)}`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, apikey: config.supabaseAnonKey, ...(isFile ? {} : { 'Content-Type': 'application/json' }) }, body: isFile ? body : JSON.stringify(body)
-  });
+  const invoke = async token => {
+    const url = `${config.supabaseUrl}/functions/v1/library?action=${encodeURIComponent(action)}`;
+    if (isFile && onUploadProgress) return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest(); xhr.open('POST', url); xhr.timeout = 180000;
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`); xhr.setRequestHeader('apikey', config.supabaseAnonKey);
+      xhr.upload.onprogress = event => { if (event.lengthComputable) onUploadProgress(event.loaded / event.total); };
+      xhr.onload = () => resolve(new Response(xhr.responseText, { status: xhr.status }));
+      xhr.onerror = () => reject(new Error('Upload connection lost. Please check your connection and try again.'));
+      xhr.ontimeout = () => reject(new Error('The upload timed out. Please try again.'));
+      xhr.send(body);
+    });
+    return fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, apikey: config.supabaseAnonKey, ...(isFile ? {} : { 'Content-Type': 'application/json' }) }, body: isFile ? body : JSON.stringify(body) });
+  };
   let response = await invoke(session.access_token);
   if (response.status === 401) {
     const { data, error } = await client.auth.refreshSession();
@@ -26,7 +37,7 @@ async function api(action, body = {}) {
     response = await invoke(data.session.access_token);
   }
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || `Request failed (${response.status}). Please try again.`);
+  if (!response.ok) { const error = new Error(result.error || `Request failed (${response.status}). Please try again.`); error.status = response.status; throw error; }
   return result;
 }
 function displaySession(session) {
@@ -67,7 +78,7 @@ function renderProjects() {
     card.querySelector('.project-name').textContent = project.title;
     card.querySelector('.pages').textContent = `${project.page_count} pages`;
     card.querySelector('.size').textContent = formatSize(project.size_bytes);
-    card.querySelector('.last-read').textContent = `Page ${project.current_page} · ${date(project.updated_at)}`;
+    card.querySelector('.last-read').textContent = project.upload_state === 'uploading' ? 'Upload interrupted · delete to retry' : `Page ${project.current_page} · ${date(project.updated_at)}`;
     card.querySelector('.project-cover').onclick = card.querySelector('.project-name').onclick = () => openProject(project).catch(e => toast(message(e)));
     card.querySelector('.project-delete').onclick = async () => {
       if (!confirm(`Delete “${project.title}” and all its notes? This cannot be undone.`)) return;
@@ -79,21 +90,66 @@ function renderProjects() {
 }
 $('project-search').oninput = renderProjects;
 for (const id of ['upload-button', 'empty-upload']) $(id).onclick = () => $('file-input').click();
+$('close-upload-error').onclick = () => $('upload-error-dialog').close();
+function uploadProgress(percent, phase = 'Uploading PDF') {
+  $('upload-phase').textContent = phase;
+  if (percent === null) { $('upload-progress').removeAttribute('value'); $('upload-percent').textContent = ''; }
+  else { $('upload-progress').value = percent; $('upload-percent').textContent = `${Math.floor(percent)}%`; }
+}
+async function retryTransfer(operation) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await operation(); } catch (error) {
+      if (attempt >= 2 || (error.status && error.status < 500 && error.status !== 429)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
+}
 $('file-input').onchange = async () => {
   const file = $('file-input').files[0]; $('file-input').value = ''; if (!file) return;
   $('upload-button').disabled = $('empty-upload').disabled = true;
-  $('upload-status').textContent = 'Checking your PDF…'; let preview;
+  $('upload-progress-wrap').hidden = false; $('upload-file-name').textContent = `${file.name} · ${formatSize(file.size)}`;
+  uploadProgress(null, 'Checking PDF');
+  $('upload-status').textContent = 'Checking your PDF…'; let preview, pendingProject;
   try {
-    if (file.size > 40 * 1048576) throw new Error('Please choose a PDF smaller than 40 MB.');
+    if (file.size > MAX_PDF_BYTES) throw new Error('This PDF exceeds the 100 MB limit. Please choose a smaller file.');
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (!new TextDecoder().decode(bytes.slice(0, 1024)).includes('%PDF-')) throw new Error('This file is not a PDF.');
     preview = await pdfjs.getDocument({ data: bytes }).promise;
-    const form = new FormData(); form.append('file', file); form.append('page_count', String(preview.numPages));
+    const pageCount = preview.numPages;
     await preview.destroy(); preview = null;
+    uploadProgress(0);
     $('upload-status').textContent = 'Uploading your textbook. Keep this page open…';
-    const { project } = await api('upload', form);
+    let project;
+    if (file.size <= 40 * 1048576) {
+      const form = new FormData(); form.append('file', file); form.append('page_count', String(pageCount));
+      ({ project } = await api('upload', form, fraction => uploadProgress(fraction * 100, fraction === 1 ? 'Saving PDF' : 'Uploading PDF')));
+    } else {
+      const started = await api('begin-upload', { title: file.name.replace(/\.pdf$/i, '').trim().slice(0, 250) || 'Untitled document', size_bytes: file.size, page_count: pageCount });
+      pendingProject = started.project;
+      for (let index = 0; index < pendingProject.storage_parts; index++) {
+        const end = Math.min(file.size, (index + 1) * started.part_bytes);
+        const form = new FormData(); form.append('id', pendingProject.id); form.append('index', String(index));
+        form.append('file', file.slice(index * started.part_bytes, end, 'application/octet-stream'), `${index}.part`);
+        await retryTransfer(() => api('upload-part', form, fraction => uploadProgress((index * started.part_bytes + fraction * (end - index * started.part_bytes)) / file.size * 100)));
+        $('upload-status').textContent = `Uploading your textbook: ${Math.floor(end / file.size * 100)}%. Keep this page open…`;
+      }
+      uploadProgress(100, 'Saving PDF');
+      ({ project } = await retryTransfer(() => api('complete-upload', { id: pendingProject.id })));
+      pendingProject = null;
+    }
+    uploadProgress(100, 'Upload complete');
     await loadProjects(); await openProject(project); toast('Your book has a home.');
-  } catch (error) { $('upload-status').textContent = error.name === 'PasswordException' ? 'Please remove the PDF password before importing it.' : message(error); }
+  } catch (error) {
+    $('upload-progress-wrap').hidden = true;
+    if (pendingProject) {
+      try { await api('delete-project', { id: pendingProject.id }); }
+      catch { toast('An interrupted upload remains in your library. Delete it to free its storage.'); }
+      await loadProjects();
+    }
+    const detail = error.name === 'PasswordException' ? 'Please remove the PDF password before importing it.' : message(error);
+    $('upload-status').textContent = $('upload-error-message').textContent = detail;
+    $('upload-error-dialog').showModal();
+  }
   finally { preview?.destroy(); $('upload-button').disabled = $('empty-upload').disabled = false; }
 };
 async function openProject(project) {
@@ -101,8 +157,26 @@ async function openProject(project) {
   $('reader-view').hidden = false; $('reader-title').textContent = project.title; $('reader-message').textContent = 'Opening your textbook…';
   $('pdf-page').hidden = true; $('notes-list').replaceChildren(); $('notes-empty').hidden = false;
   try {
-    const { url, notes, ocr } = await api('open', { id: project.id });
-    const loading = pdfjs.getDocument({ url, cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/', cMapPacked: true, standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/standard_fonts/' });
+    const { url, parts, size_bytes, part_bytes, notes, ocr } = await api('open', { id: project.id });
+    let source = { url };
+    if (parts) {
+      const data = new Uint8Array(size_bytes);
+      for (let index = 0; index < parts.length; index++) {
+        if (generation !== documentGeneration) return;
+        const chunk = await retryTransfer(async () => {
+          const response = await fetch(parts[index]);
+          if (!response.ok) throw new Error('Could not download this PDF. Please try opening it again.');
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          if (bytes.length !== Math.min(part_bytes, size_bytes - index * part_bytes)) throw new Error('The PDF download was incomplete. Please try again.');
+          return bytes;
+        });
+        data.set(chunk, index * part_bytes);
+        $('reader-message').textContent = `Opening your textbook: ${Math.floor(Math.min(size_bytes, (index + 1) * part_bytes) / size_bytes * 100)}%`;
+      }
+      source = { data };
+    }
+    if (generation !== documentGeneration) return;
+    const loading = pdfjs.getDocument({ ...source, cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/', cMapPacked: true, standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/standard_fonts/' });
     const pdf = await loading.promise;
     if (generation !== documentGeneration) { await pdf.destroy(); return; }
     state.project = project; state.pdf = pdf; state.notes = notes; state.ocr = Object.fromEntries(ocr.map(p => [p.page, p.words]));
