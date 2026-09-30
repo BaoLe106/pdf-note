@@ -4,8 +4,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4
 const $ = id => document.getElementById(id);
 const config = window.PDF_NOTE_CONFIG;
 const client = config.supabaseUrl && config.supabaseAnonKey ? createClient(config.supabaseUrl, config.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } }) : null;
-const state = { projects: [], project: null, pdf: null, notes: [], page: 1, zoom: 1, selection: null, editing: null, ocr: {}, render: 0, busy: false, loading: false, session: null };
-let renderTask, textTask, saveTimer, selectionTimer, toastTimer, resizeTimer, documentGeneration = 0;
+const state = { projects: [], project: null, pdf: null, notes: [], page: 1, zoom: 1, selection: null, editing: null, activeNoteId: null, notePopoverId: null, notePopoverPinned: false, ocr: {}, render: 0, busy: false, loading: false, session: null };
+let renderTask, textTask, saveTimer, selectionTimer, toastTimer, resizeTimer, notePopoverTimer, documentGeneration = 0;
 let positionQueue = Promise.resolve();
 const formatSize = n => `${(n / 1048576).toFixed(1)} MB`;
 const MAX_PDF_BYTES = 100 * 1048576;
@@ -179,7 +179,7 @@ async function openProject(project) {
     const loading = pdfjs.getDocument({ ...source, cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/', cMapPacked: true, standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/standard_fonts/' });
     const pdf = await loading.promise;
     if (generation !== documentGeneration) { await pdf.destroy(); return; }
-    state.project = project; state.pdf = pdf; state.notes = notes; state.ocr = Object.fromEntries(ocr.map(p => [p.page, p.words]));
+    state.project = project; state.pdf = pdf; state.notes = notes; state.activeNoteId = null; state.ocr = Object.fromEntries(ocr.map(p => [p.page, p.words]));
     $('save-status').textContent = 'All changes saved';
     state.page = Math.min(project.current_page, pdf.numPages); state.zoom = project.zoom || 1; $('note-search').value = '';
     renderNotes(); await renderPage();
@@ -207,7 +207,7 @@ async function renderPage() {
   const canvas = $('pdf-canvas'); canvas.width = Math.floor(viewport.width * ratio); canvas.height = Math.floor(viewport.height * ratio);
   canvas.style.width = `${viewport.width}px`; canvas.style.height = `${viewport.height}px`;
   const container = $('pdf-page'); container.hidden = false; container.style.width = `${viewport.width}px`; container.style.height = `${viewport.height}px`; container.style.setProperty('--scale-factor', scale);
-  $('text-layer').replaceChildren(); $('text-layer').className = 'textLayer'; $('highlight-layer').replaceChildren();
+  $('text-layer').replaceChildren(); $('text-layer').className = 'textLayer'; $('highlight-layer').replaceChildren(); $('note-hit-layer').replaceChildren(); hideNotePopover();
   $('reader-message').textContent = ''; $('page-input').value = state.page; $('page-input').max = state.pdf.numPages; $('page-total').textContent = `/ ${state.pdf.numPages}`; $('page-label').textContent = `PAGE ${state.page}`;
   $('zoom-fit').textContent = state.zoom === 1 ? 'Fit' : `${Math.round(state.zoom * 100)}%`;
   $('prev-page').disabled = state.page <= 1; $('next-page').disabled = state.page >= state.pdf.numPages;
@@ -285,18 +285,71 @@ $('copy-selection').onclick = async () => { if (!state.selection) return; try { 
 $('note-selection').onclick = () => { if (state.selection) editNote(null, state.selection); };
 function renderHighlights() {
   $('highlight-layer').replaceChildren();
+  $('note-hit-layer').replaceChildren();
   for (const note of state.notes.filter(n => n.page === state.page)) for (const rect of note.rects) {
-    const el = document.createElement('div'); el.className = `highlight-rect ${note.color}`;
-    Object.assign(el.style, { left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` }); $('highlight-layer').append(el);
+    const bounds = { left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` };
+    const highlight = document.createElement('div'); highlight.className = `highlight-rect ${note.color}`;
+    Object.assign(highlight.style, bounds); $('highlight-layer').append(highlight);
+    const target = document.createElement('button'); target.type = 'button'; target.className = 'note-hit-target';
+    target.dataset.noteId = note.id; target.setAttribute('aria-label', `Show note from page ${note.page}`);
+    Object.assign(target.style, bounds); $('note-hit-layer').append(target);
   }
 }
+function hideNotePopover() {
+  clearTimeout(notePopoverTimer); $('note-popover').hidden = true;
+  state.notePopoverId = null; state.notePopoverPinned = false;
+}
+function showNotePopover(note, anchor, pinned = false) {
+  if (!note || !window.matchMedia('(min-width: 761px) and (hover: hover)').matches) return;
+  if (state.notePopoverPinned && !pinned) return;
+  clearTimeout(notePopoverTimer);
+  state.notePopoverId = note.id; state.notePopoverPinned = pinned || state.notePopoverPinned;
+  const popup = $('note-popover');
+  $('note-popover-page').textContent = `PAGE ${note.page}`;
+  $('note-popover-quote').textContent = note.quote || '';
+  $('note-popover-quote').hidden = !note.quote;
+  $('note-popover-body').textContent = note.body || (note.quote ? '' : 'No note text.');
+  $('note-popover-body').hidden = !note.body && !!note.quote;
+  popup.hidden = false;
+  const margin = 8, gap = 10, bounds = anchor.getBoundingClientRect();
+  const left = Math.max(margin, Math.min(innerWidth - popup.offsetWidth - margin, bounds.left + bounds.width / 2 - popup.offsetWidth / 2));
+  const below = bounds.bottom + gap;
+  const top = below + popup.offsetHeight <= innerHeight - margin ? below : Math.max(margin, bounds.top - popup.offsetHeight - gap);
+  popup.style.left = `${left}px`; popup.style.top = `${top}px`;
+}
+function locateNote(note) {
+  if (!note) return;
+  const matchesFilter = `${note.quote}\n${note.body}`.toLocaleLowerCase().includes($('note-search').value.toLocaleLowerCase());
+  if (!matchesFilter) { $('note-search').value = ''; renderNotes(); }
+  state.activeNoteId = note.id;
+  document.querySelectorAll('.note-card.active').forEach(card => card.classList.remove('active'));
+  const card = Array.from($('notes-list').querySelectorAll('.note-card')).find(item => item.dataset.noteId === note.id);
+  if (card) { card.classList.add('active'); card.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+}
+$('note-hit-layer').addEventListener('pointerover', event => {
+  const target = event.target.closest('.note-hit-target'); if (!target || event.pointerType === 'touch') return;
+  const note = state.notes.find(item => item.id === target.dataset.noteId);
+  showNotePopover(note, target);
+});
+$('note-hit-layer').addEventListener('pointerout', event => {
+  if (!event.target.closest('.note-hit-target') || event.relatedTarget?.closest?.('.note-hit-target')) return;
+  if (!state.notePopoverPinned) notePopoverTimer = setTimeout(hideNotePopover, 180);
+});
+$('note-hit-layer').addEventListener('click', event => {
+  const target = event.target.closest('.note-hit-target'); if (!target) return;
+  const note = state.notes.find(item => item.id === target.dataset.noteId);
+  hideSelection(); showNotePopover(note, target, true); locateNote(note);
+});
+$('note-popover').addEventListener('pointerenter', () => clearTimeout(notePopoverTimer));
+$('note-popover').addEventListener('pointerleave', () => { if (!state.notePopoverPinned) notePopoverTimer = setTimeout(hideNotePopover, 180); });
+$('close-note-popover').onclick = hideNotePopover;
 function renderNotes() {
   $('notes-list').replaceChildren(); $('note-count').textContent = $('notes-total').textContent = state.notes.length;
   $('notes-list').hidden = state.notes.length === 0;
   const query = $('note-search').value.toLocaleLowerCase(); const notes = state.notes.filter(n => `${n.quote}\n${n.body}`.toLocaleLowerCase().includes(query));
   $('notes-empty').hidden = state.notes.length > 0;
   for (const note of notes) {
-    const card = document.createElement('article'); card.className = 'note-card';
+    const card = document.createElement('article'); card.className = `note-card${note.id === state.activeNoteId ? ' active' : ''}`; card.dataset.noteId = note.id;
     const header = document.createElement('div'); header.className = 'note-card-header'; header.textContent = `PAGE ${note.page} · ${date(note.created_at)}`; card.append(header);
     if (note.quote) { const quote = document.createElement('blockquote'); quote.textContent = note.quote; quote.style.borderColor = `var(--${note.color})`; card.append(quote); }
     if (note.body) { const body = document.createElement('p'); body.textContent = note.body; card.append(body); }
