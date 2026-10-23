@@ -10,6 +10,7 @@ let renderTask, textTask, saveTimer, selectionTimer, toastTimer, resizeTimer, no
 let positionQueue = Promise.resolve();
 const textboxTimers = new Map(), textboxSaves = new Map(), textboxPending = new Map();
 const TEXTBOX_PREFIX = '[[MARGIN_TEXTBOX_V1]]';
+const TEXTBOX_COLORS = [['#252e29', 'Black'], ['#b64b4b', 'Red'], ['#356fa3', 'Blue']];
 const formatSize = n => `${(n / 1048576).toFixed(1)} MB`;
 const MAX_PDF_BYTES = 100 * 1048576;
 const date = value => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -21,10 +22,11 @@ function textboxData(note) {
   try {
     const value = JSON.parse(note.body.slice(TEXTBOX_PREFIX.length));
     if (!value || typeof value.text !== 'string' || !['x', 'y', 'w', 'h', 'fontSize'].every(key => typeof value[key] === 'number' && Number.isFinite(value[key]))) return null;
+    const textColor = typeof value.textColor === 'string' ? value.textColor.toLowerCase() : '';
     return {
       text: value.text.slice(0, 20000), x: clamp(value.x, 0, .95), y: clamp(value.y, 0, .95),
       w: clamp(value.w, .08, 1), h: clamp(value.h, .05, 1), fontSize: clamp(value.fontSize, 10, 36),
-      textColor: /^#[0-9a-f]{6}$/i.test(value.textColor) ? value.textColor : '#315c4c'
+      textColor: TEXTBOX_COLORS.some(([color]) => color === textColor) ? textColor : '#252e29'
     };
   } catch { return null; }
 }
@@ -320,7 +322,7 @@ function textboxPlacement(selection) {
   const right = Math.max(...selection.rects.map(rect => rect.x + rect.w));
   const w = innerWidth <= 760 ? .38 : .3, h = .14, gap = .018;
   const x = right + gap + w <= .985 ? right + gap : Math.max(.015, left - gap - w);
-  return { text: '', x, y: clamp(top, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#315c4c' };
+  return { text: '', x, y: clamp(top, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#252e29' };
 }
 async function saveNewTextbox({ page, quote = '', rects = [], data, color = 'yellow' }) {
   if (!state.project) return;
@@ -342,7 +344,7 @@ $('pdf-page').addEventListener('pointerdown', event => {
   if (!state.placingTextbox || event.button !== 0 || event.target.closest('.floating-textbox')) return;
   event.preventDefault(); event.stopPropagation();
   const bounds = $('pdf-page').getBoundingClientRect(), w = innerWidth <= 760 ? .38 : .3, h = .14;
-  const data = { text: '', x: clamp((event.clientX - bounds.left) / bounds.width, .015, 1 - w - .015), y: clamp((event.clientY - bounds.top) / bounds.height, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#315c4c' };
+  const data = { text: '', x: clamp((event.clientX - bounds.left) / bounds.width, .015, 1 - w - .015), y: clamp((event.clientY - bounds.top) / bounds.height, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#252e29' };
   setTextboxPlacement(false); saveNewTextbox({ page: state.page, data, color: 'sage' }).catch(error => toast(message(error)));
 }, true);
 function clearTextboxLayer() {
@@ -408,15 +410,15 @@ function renderTextboxes() {
     const handle = document.createElement('button'); handle.type = 'button'; handle.className = 'textbox-handle'; handle.textContent = '⠿'; handle.title = 'Drag text box'; handle.setAttribute('aria-label', 'Drag text box');
     const size = document.createElement('select'); size.className = 'textbox-size'; size.setAttribute('aria-label', 'Text size');
     for (const value of [10, 12, 14, 16, 18, 20, 24, 28, 32, 36]) { const option = document.createElement('option'); option.value = value; option.textContent = value; option.selected = value === data.fontSize; size.append(option); }
-    const color = document.createElement('input'); color.type = 'color'; color.className = 'textbox-color'; color.value = data.textColor; color.title = 'Text color'; color.setAttribute('aria-label', 'Text color');
+    const color = document.createElement('select'); color.className = 'textbox-color'; color.title = 'Text color'; color.setAttribute('aria-label', 'Text color');
+    for (const [value, label] of TEXTBOX_COLORS) { const option = document.createElement('option'); option.value = value; option.textContent = label; option.selected = value === data.textColor; color.append(option); }
     const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'textbox-delete'; remove.textContent = '×'; remove.title = 'Delete text box'; remove.setAttribute('aria-label', 'Delete text box');
     const editor = document.createElement('textarea'); editor.className = 'textbox-editor'; editor.value = data.text; editor.maxLength = 20000; editor.placeholder = 'Type your thought…'; editor.setAttribute('aria-label', 'Floating text box'); editor.style.fontSize = `${data.fontSize * scale}px`;
     bar.append(handle, size, color, remove); box.append(bar, editor); layer.append(box);
     editor.addEventListener('input', () => { data.text = editor.value; scheduleTextboxSave(note, data); });
     editor.addEventListener('blur', () => { if (textboxPending.has(note.id)) flushTextboxSave(note.id).catch(error => toast(message(error))); renderNotes(); });
     size.addEventListener('change', () => { data.fontSize = Number(size.value); editor.style.fontSize = `${data.fontSize * scale}px`; scheduleTextboxSave(note, data, 0)?.catch(error => toast(message(error))); });
-    color.addEventListener('input', () => { data.textColor = color.value; box.style.color = data.textColor; scheduleTextboxSave(note, data); });
-    color.addEventListener('change', () => flushTextboxSave(note.id).catch(error => toast(message(error))));
+    color.addEventListener('change', () => { data.textColor = color.value; box.style.color = data.textColor; scheduleTextboxSave(note, data, 0)?.catch(error => toast(message(error))); });
     remove.addEventListener('click', () => deleteTextbox(note).catch(error => toast(message(error))));
     interact(box).draggable({ allowFrom: '.textbox-handle', ignoreFrom: '.textbox-editor,.textbox-size,.textbox-color,.textbox-delete', modifiers: [interact.modifiers.restrictRect({ restriction: 'parent' })], listeners: {
       move(event) { box.style.left = `${parseFloat(box.style.left) + event.dx}px`; box.style.top = `${parseFloat(box.style.top) + event.dy}px`; },
