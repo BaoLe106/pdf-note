@@ -25,7 +25,7 @@ function textboxData(note) {
     const textColor = typeof value.textColor === 'string' ? value.textColor.toLowerCase() : '';
     return {
       text: value.text.slice(0, 20000), x: clamp(value.x, 0, .95), y: clamp(value.y, 0, .95),
-      w: clamp(value.w, .08, 1), h: clamp(value.h, .05, 1), fontSize: clamp(value.fontSize, 10, 36),
+      w: clamp(value.w, .06, 1), h: Math.abs(value.h - .14) < .000001 ? .05 : clamp(value.h, .025, 1), fontSize: clamp(value.fontSize, 10, 36),
       textColor: TEXTBOX_COLORS.some(([color]) => color === textColor) ? textColor : '#252e29'
     };
   } catch { return null; }
@@ -320,7 +320,7 @@ function textboxPlacement(selection) {
   const left = Math.min(...selection.rects.map(rect => rect.x));
   const top = Math.min(...selection.rects.map(rect => rect.y));
   const right = Math.max(...selection.rects.map(rect => rect.x + rect.w));
-  const w = innerWidth <= 760 ? .38 : .3, h = .14, gap = .018;
+  const w = innerWidth <= 760 ? .34 : .24, h = .05, gap = .018;
   const x = right + gap + w <= .985 ? right + gap : Math.max(.015, left - gap - w);
   return { text: '', x, y: clamp(top, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#252e29' };
 }
@@ -343,7 +343,7 @@ async function createTextbox(selection) {
 $('pdf-page').addEventListener('pointerdown', event => {
   if (!state.placingTextbox || event.button !== 0 || event.target.closest('.floating-textbox')) return;
   event.preventDefault(); event.stopPropagation();
-  const bounds = $('pdf-page').getBoundingClientRect(), w = innerWidth <= 760 ? .38 : .3, h = .14;
+  const bounds = $('pdf-page').getBoundingClientRect(), w = innerWidth <= 760 ? .34 : .24, h = .05;
   const data = { text: '', x: clamp((event.clientX - bounds.left) / bounds.width, .015, 1 - w - .015), y: clamp((event.clientY - bounds.top) / bounds.height, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#252e29' };
   setTextboxPlacement(false); saveNewTextbox({ page: state.page, data, color: 'sage' }).catch(error => toast(message(error)));
 }, true);
@@ -384,8 +384,8 @@ function syncTextboxGeometry(element) {
   if (!data || !note || !layer.clientWidth || !layer.clientHeight) return;
   data.x = clamp(parseFloat(element.style.left) / layer.clientWidth, 0, 1);
   data.y = clamp(parseFloat(element.style.top) / layer.clientHeight, 0, 1);
-  data.w = clamp(element.offsetWidth / layer.clientWidth, .08, 1 - data.x);
-  data.h = clamp(element.offsetHeight / layer.clientHeight, .05, 1 - data.y);
+  data.w = clamp(element.offsetWidth / layer.clientWidth, .06, 1 - data.x);
+  data.h = clamp(element.offsetHeight / layer.clientHeight, .025, 1 - data.y);
   scheduleTextboxSave(note, data, 0)?.catch(error => toast(message(error)));
 }
 async function deleteTextbox(note) {
@@ -414,7 +414,8 @@ function renderTextboxes() {
     for (const [value, label] of TEXTBOX_COLORS) { const option = document.createElement('option'); option.value = value; option.textContent = label; option.selected = value === data.textColor; color.append(option); }
     const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'textbox-delete'; remove.textContent = '×'; remove.title = 'Delete text box'; remove.setAttribute('aria-label', 'Delete text box');
     const editor = document.createElement('textarea'); editor.className = 'textbox-editor'; editor.value = data.text; editor.maxLength = 20000; editor.placeholder = 'Type your thought…'; editor.setAttribute('aria-label', 'Floating text box'); editor.style.fontSize = `${data.fontSize * scale}px`;
-    bar.append(handle, size, color, remove); box.append(bar, editor); layer.append(box);
+    const resize = document.createElement('span'); resize.className = 'textbox-resize'; resize.setAttribute('aria-hidden', 'true');
+    bar.append(handle, size, color, remove); box.append(bar, editor, resize); layer.append(box);
     editor.addEventListener('input', () => { data.text = editor.value; scheduleTextboxSave(note, data); });
     editor.addEventListener('blur', () => { if (textboxPending.has(note.id)) flushTextboxSave(note.id).catch(error => toast(message(error))); renderNotes(); });
     size.addEventListener('change', () => { data.fontSize = Number(size.value); editor.style.fontSize = `${data.fontSize * scale}px`; scheduleTextboxSave(note, data, 0)?.catch(error => toast(message(error))); });
@@ -423,7 +424,7 @@ function renderTextboxes() {
     interact(box).draggable({ allowFrom: '.textbox-handle', ignoreFrom: '.textbox-editor,.textbox-size,.textbox-color,.textbox-delete', modifiers: [interact.modifiers.restrictRect({ restriction: 'parent' })], listeners: {
       move(event) { box.style.left = `${parseFloat(box.style.left) + event.dx}px`; box.style.top = `${parseFloat(box.style.top) + event.dy}px`; },
       end() { syncTextboxGeometry(box); }
-    }}).resizable({ edges: { left: true, right: true, bottom: true, top: true }, modifiers: [interact.modifiers.restrictEdges({ outer: 'parent' }), interact.modifiers.restrictSize({ min: { width: 110, height: 64 } })], listeners: {
+    }}).resizable({ edges: { right: '.textbox-resize', bottom: '.textbox-resize' }, modifiers: [interact.modifiers.restrictEdges({ outer: 'parent' }), interact.modifiers.restrictSize({ min: { width: 80, height: 34 } })], listeners: {
       move(event) { box.style.width = `${event.rect.width}px`; box.style.height = `${event.rect.height}px`; box.style.left = `${parseFloat(box.style.left) + event.deltaRect.left}px`; box.style.top = `${parseFloat(box.style.top) + event.deltaRect.top}px`; },
       end() { syncTextboxGeometry(box); }
     }});

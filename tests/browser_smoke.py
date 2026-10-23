@@ -87,8 +87,9 @@ def main():
         page.mouse.move(handle['x'] + handle['width'] / 2, handle['y'] + handle['height'] / 2)
         page.mouse.down(); page.mouse.move(handle['x'] + handle['width'] / 2 + 35, handle['y'] + handle['height'] / 2 + 25); page.mouse.up()
         after_drag = box.bounding_box(); assert after_drag['x'] != before['x'] or after_drag['y'] != before['y']
-        page.mouse.move(after_drag['x'] + after_drag['width'] - 2, after_drag['y'] + after_drag['height'] - 2)
-        page.mouse.down(); page.mouse.move(after_drag['x'] + after_drag['width'] + 28, after_drag['y'] + after_drag['height'] + 18); page.mouse.up()
+        assert abs(after_drag['width'] - before['width']) < 2 and abs(after_drag['height'] - before['height']) < 2
+        resize = box.locator('.textbox-resize').bounding_box(); page.mouse.move(resize['x'] + resize['width'] / 2, resize['y'] + resize['height'] / 2)
+        page.mouse.down(); page.mouse.move(resize['x'] + resize['width'] / 2 + 28, resize['y'] + resize['height'] / 2 + 18); page.mouse.up()
         after_resize = box.bounding_box(); assert after_resize['width'] > after_drag['width'] or after_resize['height'] > after_drag['height']
         page.locator('#page-label').click(); expect(page.locator('#save-status')).to_have_text('All changes saved')
         assert box.evaluate("el => { const style = getComputedStyle(el); return style.borderStyle === 'solid' && style.borderWidth === '1px' && style.backgroundColor === 'rgba(0, 0, 0, 0)' }")
