@@ -5,7 +5,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4
 const $ = id => document.getElementById(id);
 const config = window.PDF_NOTE_CONFIG;
 const client = config.supabaseUrl && config.supabaseAnonKey ? createClient(config.supabaseUrl, config.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } }) : null;
-const state = { projects: [], project: null, pdf: null, notes: [], page: 1, zoom: 1, selection: null, editing: null, activeNoteId: null, notePopoverId: null, notePopoverPinned: false, ocr: {}, render: 0, busy: false, loading: false, session: null };
+const state = { projects: [], project: null, pdf: null, notes: [], page: 1, zoom: 1, selection: null, editing: null, activeNoteId: null, notePopoverId: null, notePopoverPinned: false, placingTextbox: false, ocr: {}, render: 0, busy: false, loading: false, session: null };
 let renderTask, textTask, saveTimer, selectionTimer, toastTimer, resizeTimer, notePopoverTimer, documentGeneration = 0;
 let positionQueue = Promise.resolve();
 const textboxTimers = new Map(), textboxSaves = new Map(), textboxPending = new Map();
@@ -207,6 +207,7 @@ async function openProject(project) {
 }
 function closeReader() {
   ++documentGeneration; ++state.render; clearTimeout(saveTimer); hideSelection();
+  setTextboxPlacement(false);
   for (const timer of textboxTimers.values()) clearTimeout(timer);
   textboxTimers.clear(); textboxPending.clear(); textboxSaves.clear();
   renderTask?.cancel(); textTask?.cancel(); state.pdf?.destroy(); state.pdf = null; state.project = null; state.notes = []; state.ocr = {};
@@ -277,7 +278,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) { flu
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (state.pdf && !state.busy) renderPage().catch(e => toast(message(e))); }, 220); });
 function hideSelection() { $('selection-popover').hidden = true; state.selection = null; }
 function captureSelection() {
-  if (!state.project || $('note-dialog').open || state.busy) return;
+  if (!state.project || $('note-dialog').open || state.busy || state.placingTextbox) return;
   const selection = window.getSelection(); const layer = $('text-layer');
   if (!selection.rangeCount || selection.isCollapsed || !layer.contains(selection.anchorNode) || !layer.contains(selection.focusNode)) return hideSelection();
   const range = selection.getRangeAt(0); const text = selection.toString().trim(); if (!text) return hideSelection();
@@ -306,6 +307,13 @@ $('close-selection').onclick = () => { window.getSelection().removeAllRanges(); 
 $('copy-selection').onclick = async () => { if (!state.selection) return; try { await navigator.clipboard.writeText(state.selection.quote); toast('Passage copied'); } catch { toast('Use your browser’s Copy action to copy this passage.'); } };
 $('note-selection').onclick = () => { if (state.selection) editNote(null, state.selection); };
 $('textbox-selection').onclick = () => { if (state.selection) createTextbox(state.selection).catch(error => toast(message(error))); };
+function setTextboxPlacement(active) {
+  state.placingTextbox = !!active && !!state.pdf;
+  $('textbox-tool').classList.toggle('tool-active', state.placingTextbox); $('textbox-tool').setAttribute('aria-pressed', String(state.placingTextbox));
+  $('pdf-page').classList.toggle('textbox-placement', state.placingTextbox);
+  if (state.placingTextbox) { hideSelection(); window.getSelection().removeAllRanges(); toast('Click or tap anywhere on the PDF to place a text box.'); }
+}
+$('textbox-tool').onclick = () => setTextboxPlacement(!state.placingTextbox);
 function textboxPlacement(selection) {
   const left = Math.min(...selection.rects.map(rect => rect.x));
   const top = Math.min(...selection.rects.map(rect => rect.y));
@@ -314,17 +322,29 @@ function textboxPlacement(selection) {
   const x = right + gap + w <= .985 ? right + gap : Math.max(.015, left - gap - w);
   return { text: '', x, y: clamp(top, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#315c4c' };
 }
-async function createTextbox(selection) {
-  if (!state.project || !selection?.rects.length) return;
-  const project = state.project, data = textboxPlacement(selection);
-  hideSelection(); window.getSelection().removeAllRanges(); $('save-status').textContent = 'Saving text box…';
+async function saveNewTextbox({ page, quote = '', rects = [], data, color = 'yellow' }) {
+  if (!state.project) return;
+  const project = state.project; $('save-status').textContent = 'Saving text box…';
   try {
-    const { note } = await api('save-note', { project_id: project.id, page: selection.page, quote: selection.quote, body: encodeTextbox(data), rects: selection.rects, color: 'yellow' });
+    const { note } = await api('save-note', { project_id: project.id, page, quote, body: encodeTextbox(data), rects, color });
     if (state.project !== project) return;
     state.notes = [note, ...state.notes]; renderNotes(); renderHighlights(); $('save-status').textContent = 'All changes saved';
     requestAnimationFrame(() => focusTextbox(note));
   } catch (error) { if (state.project === project) $('save-status').textContent = 'Text box not saved · try again'; throw error; }
 }
+async function createTextbox(selection) {
+  if (!state.project || !selection?.rects.length) return;
+  const data = textboxPlacement(selection);
+  hideSelection(); window.getSelection().removeAllRanges(); $('save-status').textContent = 'Saving text box…';
+  await saveNewTextbox({ page: selection.page, quote: selection.quote, rects: selection.rects, data });
+}
+$('pdf-page').addEventListener('pointerdown', event => {
+  if (!state.placingTextbox || event.button !== 0 || event.target.closest('.floating-textbox')) return;
+  event.preventDefault(); event.stopPropagation();
+  const bounds = $('pdf-page').getBoundingClientRect(), w = innerWidth <= 760 ? .38 : .3, h = .14;
+  const data = { text: '', x: clamp((event.clientX - bounds.left) / bounds.width, .015, 1 - w - .015), y: clamp((event.clientY - bounds.top) / bounds.height, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#315c4c' };
+  setTextboxPlacement(false); saveNewTextbox({ page: state.page, data, color: 'sage' }).catch(error => toast(message(error)));
+}, true);
 function clearTextboxLayer() {
   $('textbox-layer').querySelectorAll('.floating-textbox').forEach(element => interact(element).unset());
   $('textbox-layer').replaceChildren();
@@ -549,7 +569,7 @@ function renderOCR(words) {
   const width = $('pdf-page').offsetWidth, height = $('pdf-page').offsetHeight;
   for (const word of words) { const span = document.createElement('span'); span.textContent = word.text + ' '; Object.assign(span.style, { left: `${word.x * 100}%`, top: `${word.y * 100}%`, fontSize: `${word.h * height}px`, height: `${word.h * height}px` }); layer.append(span); const measured = span.getBoundingClientRect().width; if (measured) span.style.transform = `scaleX(${word.w * width / measured})`; }
 }
-document.addEventListener('keydown', event => { if (event.key === 'Escape') { hideSelection(); $('notes-panel').classList.remove('open'); } if (!state.pdf || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.querySelector('dialog[open]')) return; if (event.key === 'ArrowRight') changePage(state.page + 1); if (event.key === 'ArrowLeft') changePage(state.page - 1); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') { hideSelection(); setTextboxPlacement(false); $('notes-panel').classList.remove('open'); } if (!state.pdf || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.querySelector('dialog[open]')) return; if (event.key === 'ArrowRight') changePage(state.page + 1); if (event.key === 'ArrowLeft') changePage(state.page - 1); });
 if (client) {
   client.auth.onAuthStateChange((event, session) => { if (event === 'SIGNED_OUT') displaySession(null); else state.session = session; });
   const { data: { session } } = await client.auth.getSession(); displaySession(session); if (session) await loadProjects();
