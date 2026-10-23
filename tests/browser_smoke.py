@@ -103,6 +103,11 @@ def main():
         assert page.locator('.highlight-rect').count() == highlights_before
         standalone.locator('.textbox-delete').click(); expect(page.locator('.floating-textbox')).to_have_count(1)
         print('PASS: standalone text box placement anywhere on the PDF without a highlight', flush=True)
+        page.locator('#note-type-filter').select_option('textbox'); expect(page.locator('.note-card')).to_have_count(1); expect(page.locator('.note-card')).to_contain_text(TEXTBOX)
+        page.locator('#note-type-filter').select_option('note'); expect(page.locator('.note-card')).to_have_count(1); expect(page.locator('.note-card')).to_contain_text(NOTE)
+        page.locator('#note-type-filter').select_option('all'); page.locator('#note-color-filter').select_option('yellow'); expect(page.locator('.note-card')).to_have_count(1); expect(page.locator('.note-card')).to_contain_text(TEXTBOX)
+        page.locator('#note-color-filter').select_option('all'); expect(page.locator('.note-card')).to_have_count(2)
+        print('PASS: margin notes filter by type and highlight color', flush=True)
         page.locator('#zoom-in').click(); expect(page.locator('#zoom-fit')).to_have_text('120%')
         expect(page.locator('.highlight-rect').first).to_be_visible()
         page.locator('#next-page').click(); expect(page.locator('#page-input')).to_have_value('2')

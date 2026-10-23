@@ -200,7 +200,7 @@ async function openProject(project) {
     if (generation !== documentGeneration) { await pdf.destroy(); return; }
     state.project = project; state.pdf = pdf; state.notes = notes; state.activeNoteId = null; state.ocr = Object.fromEntries(ocr.map(p => [p.page, p.words]));
     $('save-status').textContent = 'All changes saved';
-    state.page = Math.min(project.current_page, pdf.numPages); state.zoom = project.zoom || 1; $('note-search').value = '';
+    state.page = Math.min(project.current_page, pdf.numPages); state.zoom = project.zoom || 1; $('note-search').value = ''; $('note-type-filter').value = $('note-color-filter').value = 'all';
     renderNotes(); await renderPage();
   } catch (error) { if (generation === documentGeneration) $('reader-message').textContent = message(error); }
   finally { state.loading = false; }
@@ -465,8 +465,7 @@ function showNotePopover(note, anchor, pinned = false) {
 }
 function locateNote(note) {
   if (!note) return;
-  const matchesFilter = noteSearchText(note).toLocaleLowerCase().includes($('note-search').value.toLocaleLowerCase());
-  if (!matchesFilter) { $('note-search').value = ''; renderNotes(); }
+  if (!noteMatchesFilters(note)) { $('note-search').value = ''; $('note-type-filter').value = $('note-color-filter').value = 'all'; renderNotes(); }
   state.activeNoteId = note.id;
   document.querySelectorAll('.note-card.active').forEach(card => card.classList.remove('active'));
   const card = Array.from($('notes-list').querySelectorAll('.note-card')).find(item => item.dataset.noteId === note.id);
@@ -490,10 +489,17 @@ $('note-hit-layer').addEventListener('click', event => {
 $('note-popover').addEventListener('pointerenter', () => clearTimeout(notePopoverTimer));
 $('note-popover').addEventListener('pointerleave', () => { if (!state.notePopoverPinned) notePopoverTimer = setTimeout(hideNotePopover, 180); });
 $('close-note-popover').onclick = hideNotePopover;
+function noteMatchesFilters(note) {
+  const query = $('note-search').value.toLocaleLowerCase(), type = $('note-type-filter').value, color = $('note-color-filter').value;
+  const isTextbox = !!textboxData(note);
+  return noteSearchText(note).toLocaleLowerCase().includes(query)
+    && (type === 'all' || (type === 'textbox') === isTextbox)
+    && (color === 'all' || note.color === color);
+}
 function renderNotes() {
   $('notes-list').replaceChildren(); $('note-count').textContent = $('notes-total').textContent = state.notes.length;
   $('notes-list').hidden = state.notes.length === 0;
-  const query = $('note-search').value.toLocaleLowerCase(); const notes = state.notes.filter(n => noteSearchText(n).toLocaleLowerCase().includes(query));
+  const notes = state.notes.filter(noteMatchesFilters);
   $('notes-empty').hidden = state.notes.length > 0;
   for (const note of notes) {
     const textbox = textboxData(note), bodyText = textbox?.text || (textbox ? '' : note.body);
@@ -506,9 +512,9 @@ function renderNotes() {
     const jump = document.createElement('button'); jump.textContent = textbox ? 'Show text box ↗' : 'Go to passage ↗'; jump.onclick = async () => { $('notes-panel').classList.remove('open'); if (textbox) await focusTextbox(note); else { await changePage(note.page); if (note.rects[0]) $('pdf-scroll').scrollTop = Math.max(0, note.rects[0].y * $('pdf-page').offsetHeight - 100); } };
     const edit = document.createElement('button'); edit.textContent = textbox ? 'Delete' : 'Edit'; edit.onclick = () => textbox ? deleteTextbox(note).catch(error => toast(message(error))) : editNote(note); actions.append(jump, edit); card.append(actions); $('notes-list').append(card);
   }
-  if (query && !notes.length) { const p = document.createElement('p'); p.className = 'small'; p.textContent = 'No notes match your search.'; $('notes-list').append(p); }
+  if (!notes.length && state.notes.length) { const p = document.createElement('p'); p.className = 'small'; p.textContent = 'No notes match these filters.'; $('notes-list').append(p); }
 }
-$('note-search').oninput = renderNotes;
+$('note-search').oninput = $('note-type-filter').onchange = $('note-color-filter').onchange = renderNotes;
 function editNote(note = null, selection = null) {
   if (textboxData(note)) return focusTextbox(note);
   if (!state.project) return; state.editing = note ? { ...note } : { page: selection?.page || state.page, rects: selection?.rects || [], quote: selection?.quote || '', body: '', color: 'sage' };

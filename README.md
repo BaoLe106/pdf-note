@@ -9,7 +9,7 @@ A private PDF reading and notes library, built for Traditional Chinese textbooks
 - Import each PDF as a project; reopen its saved page and zoom.
 - Select text to open **Copy · Note · Text box · Close**. Saving a note persists its highlight and selected passage.
 - Choose **Text box**, click or tap anywhere on a PDF page, then type, drag, resize, recolor, or change its text size without modifying the original PDF. Textboxes are borderless at rest, with editing controls shown only on hover or focus. A textbox can also be linked to selected text.
-- Add standalone notes, edit passages and notes, choose highlight colors, search, and export UTF-8 Markdown.
+- Add standalone notes, edit passages and notes, choose highlight colors, search or filter by note type/color, and export UTF-8 Markdown.
 - Responsive reader and notes drawer for mobile browsers.
 - PDF.js character maps and fonts for CJK PDFs.
 - Optional on-device OCR for scanned pages: Traditional Chinese, vertical Traditional Chinese, Vietnamese, and English. Recognized word positions persist with the project. OCR can make mistakes; passages remain editable.
