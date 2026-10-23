@@ -91,6 +91,7 @@ def main():
         page.mouse.down(); page.mouse.move(after_drag['x'] + after_drag['width'] + 28, after_drag['y'] + after_drag['height'] + 18); page.mouse.up()
         after_resize = box.bounding_box(); assert after_resize['width'] > after_drag['width'] or after_resize['height'] > after_drag['height']
         page.locator('#page-label').click(); expect(page.locator('#save-status')).to_have_text('All changes saved')
+        assert box.evaluate("el => { const style = getComputedStyle(el); return style.borderStyle === 'none' && style.backgroundColor === 'rgba(0, 0, 0, 0)' }")
         expect(page.locator('.note-card').filter(has_text=TEXTBOX)).to_be_visible()
         print('PASS: floating text box creation, editing, styling, dragging, resizing, and saving', flush=True)
         highlights_before = page.locator('.highlight-rect').count()

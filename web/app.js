@@ -402,10 +402,10 @@ function renderTextboxes() {
   clearTextboxLayer(); const layer = $('textbox-layer'), scale = Number.parseFloat(getComputedStyle($('pdf-page')).getPropertyValue('--scale-factor')) || 1;
   for (const note of state.notes.filter(item => item.page === state.page)) {
     const data = textboxData(note); if (!data) continue;
-    const box = document.createElement('section'); box.className = 'floating-textbox'; box.dataset.noteId = note.id; box._textboxData = data; box._textboxNote = note;
+    const box = document.createElement('section'); box.className = `floating-textbox${data.y < .055 ? ' textbox-toolbar-below' : ''}`; box.dataset.noteId = note.id; box._textboxData = data; box._textboxNote = note;
     Object.assign(box.style, { left: `${data.x * layer.clientWidth}px`, top: `${data.y * layer.clientHeight}px`, width: `${Math.min(data.w, 1 - data.x) * layer.clientWidth}px`, height: `${Math.min(data.h, 1 - data.y) * layer.clientHeight}px`, color: data.textColor });
     const bar = document.createElement('div'); bar.className = 'textbox-bar';
-    const handle = document.createElement('button'); handle.type = 'button'; handle.className = 'textbox-handle'; handle.textContent = '•••'; handle.title = 'Drag text box'; handle.setAttribute('aria-label', 'Drag text box');
+    const handle = document.createElement('button'); handle.type = 'button'; handle.className = 'textbox-handle'; handle.textContent = '⠿'; handle.title = 'Drag text box'; handle.setAttribute('aria-label', 'Drag text box');
     const size = document.createElement('select'); size.className = 'textbox-size'; size.setAttribute('aria-label', 'Text size');
     for (const value of [10, 12, 14, 16, 18, 20, 24, 28, 32, 36]) { const option = document.createElement('option'); option.value = value; option.textContent = value; option.selected = value === data.fontSize; size.append(option); }
     const color = document.createElement('input'); color.type = 'color'; color.className = 'textbox-color'; color.value = data.textColor; color.title = 'Text color'; color.setAttribute('aria-label', 'Text color');
