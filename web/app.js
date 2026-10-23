@@ -1,5 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/+esm';
 import * as pdfjs from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.mjs';
+import interact from 'https://cdn.jsdelivr.net/npm/interactjs@1.10.28/+esm';
 pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
 const config = window.PDF_NOTE_CONFIG;
@@ -7,11 +8,29 @@ const client = config.supabaseUrl && config.supabaseAnonKey ? createClient(confi
 const state = { projects: [], project: null, pdf: null, notes: [], page: 1, zoom: 1, selection: null, editing: null, activeNoteId: null, notePopoverId: null, notePopoverPinned: false, ocr: {}, render: 0, busy: false, loading: false, session: null };
 let renderTask, textTask, saveTimer, selectionTimer, toastTimer, resizeTimer, notePopoverTimer, documentGeneration = 0;
 let positionQueue = Promise.resolve();
+const textboxTimers = new Map(), textboxSaves = new Map(), textboxPending = new Map();
+const TEXTBOX_PREFIX = '[[MARGIN_TEXTBOX_V1]]';
 const formatSize = n => `${(n / 1048576).toFixed(1)} MB`;
 const MAX_PDF_BYTES = 100 * 1048576;
 const date = value => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4500); }
 function message(error) { return error?.message || 'Something went wrong. Please try again.'; }
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+function textboxData(note) {
+  if (typeof note?.body !== 'string' || !note.body.startsWith(TEXTBOX_PREFIX)) return null;
+  try {
+    const value = JSON.parse(note.body.slice(TEXTBOX_PREFIX.length));
+    if (!value || typeof value.text !== 'string' || !['x', 'y', 'w', 'h', 'fontSize'].every(key => typeof value[key] === 'number' && Number.isFinite(value[key]))) return null;
+    return {
+      text: value.text.slice(0, 20000), x: clamp(value.x, 0, .95), y: clamp(value.y, 0, .95),
+      w: clamp(value.w, .08, 1), h: clamp(value.h, .05, 1), fontSize: clamp(value.fontSize, 10, 36),
+      textColor: /^#[0-9a-f]{6}$/i.test(value.textColor) ? value.textColor : '#315c4c'
+    };
+  } catch { return null; }
+}
+const encodeTextbox = value => TEXTBOX_PREFIX + JSON.stringify(value);
+function visibleBody(note) { const textbox = textboxData(note); return textbox ? textbox.text : note.body; }
+const noteSearchText = note => `${note.quote}\n${visibleBody(note)}`;
 async function api(action, body = {}, onUploadProgress = null) {
   if (!client) throw new Error('The library is being set up. Please try again after deployment.');
   const { data: { session } } = await client.auth.getSession();
@@ -56,7 +75,7 @@ $('login-form').addEventListener('submit', async event => {
   } catch (error) { $('login-error').textContent = message(error); } finally { $('login-button').disabled = false; }
 });
 $('logout-button').onclick = async () => {
-  try { await flushPosition(); const { error } = await client.auth.signOut(); if (error) throw error; displaySession(null); } catch (error) { toast(message(error)); }
+  try { await flushAllTextboxSaves(); await flushPosition(); const { error } = await client.auth.signOut(); if (error) throw error; displaySession(null); } catch (error) { toast(message(error)); }
 };
 async function loadProjects() {
   $('upload-status').textContent = 'Opening your library…';
@@ -188,10 +207,12 @@ async function openProject(project) {
 }
 function closeReader() {
   ++documentGeneration; ++state.render; clearTimeout(saveTimer); hideSelection();
+  for (const timer of textboxTimers.values()) clearTimeout(timer);
+  textboxTimers.clear(); textboxPending.clear(); textboxSaves.clear();
   renderTask?.cancel(); textTask?.cancel(); state.pdf?.destroy(); state.pdf = null; state.project = null; state.notes = []; state.ocr = {};
   $('reader-view').hidden = true; $('notes-panel').classList.remove('open'); $('note-dialog').close(); $('ocr-dialog').close();
 }
-$('back-button').onclick = async () => { if (state.busy) return toast('Please wait for text recognition to finish.'); try { await flushPosition(); closeReader(); await loadProjects(); } catch (e) { toast(message(e)); } };
+$('back-button').onclick = async () => { if (state.busy) return toast('Please wait for text recognition to finish.'); try { await flushAllTextboxSaves(); await flushPosition(); closeReader(); await loadProjects(); } catch (e) { toast(message(e)); } };
 $('library-button').onclick = () => $('back-button').click();
 async function renderPage() {
   if (!state.pdf) return;
@@ -207,7 +228,7 @@ async function renderPage() {
   const canvas = $('pdf-canvas'); canvas.width = Math.floor(viewport.width * ratio); canvas.height = Math.floor(viewport.height * ratio);
   canvas.style.width = `${viewport.width}px`; canvas.style.height = `${viewport.height}px`;
   const container = $('pdf-page'); container.hidden = false; container.style.width = `${viewport.width}px`; container.style.height = `${viewport.height}px`; container.style.setProperty('--scale-factor', scale);
-  $('text-layer').replaceChildren(); $('text-layer').className = 'textLayer'; $('highlight-layer').replaceChildren(); $('note-hit-layer').replaceChildren(); hideNotePopover();
+  $('text-layer').replaceChildren(); $('text-layer').className = 'textLayer'; $('highlight-layer').replaceChildren(); $('note-hit-layer').replaceChildren(); clearTextboxLayer(); hideNotePopover();
   $('reader-message').textContent = ''; $('page-input').value = state.page; $('page-input').max = state.pdf.numPages; $('page-total').textContent = `/ ${state.pdf.numPages}`; $('page-label').textContent = `PAGE ${state.page}`;
   $('zoom-fit').textContent = state.zoom === 1 ? 'Fit' : `${Math.round(state.zoom * 100)}%`;
   $('prev-page').disabled = state.page <= 1; $('next-page').disabled = state.page >= state.pdf.numPages;
@@ -229,10 +250,11 @@ async function renderPage() {
 }
 async function changePage(value) {
   if (!state.pdf || state.busy) return;
+  await flushAllTextboxSaves();
   state.page = Math.max(1, Math.min(state.pdf.numPages, Math.trunc(Number(value)) || 1)); $('pdf-scroll').scrollTo(0, 0);
   schedulePosition(); await renderPage();
 }
-$('prev-page').onclick = () => changePage(state.page - 1); $('next-page').onclick = () => changePage(state.page + 1); $('page-input').onchange = () => changePage($('page-input').value);
+$('prev-page').onclick = () => changePage(state.page - 1).catch(error => toast(message(error))); $('next-page').onclick = () => changePage(state.page + 1).catch(error => toast(message(error))); $('page-input').onchange = () => changePage($('page-input').value).catch(error => toast(message(error)));
 async function zoom(value) { if (state.busy || !state.pdf) return; state.zoom = Math.max(.6, Math.min(2.5, value)); schedulePosition(); await renderPage(); }
 $('zoom-in').onclick = () => zoom(state.zoom + .2); $('zoom-out').onclick = () => zoom(state.zoom - .2); $('zoom-fit').onclick = () => zoom(1);
 function schedulePosition() { clearTimeout(saveTimer); $('save-status').textContent = 'Saving position…'; saveTimer = setTimeout(() => flushPosition().catch(e => toast(message(e))), 700); }
@@ -251,7 +273,7 @@ function flushPosition() {
   positionQueue = positionQueue.catch(() => {}).then(save);
   return positionQueue;
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden) flushPosition().catch(() => {}); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { flushAllTextboxSaves().catch(() => {}); flushPosition().catch(() => {}); } });
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (state.pdf && !state.busy) renderPage().catch(e => toast(message(e))); }, 220); });
 function hideSelection() { $('selection-popover').hidden = true; state.selection = null; }
 function captureSelection() {
@@ -283,6 +305,108 @@ $('selection-popover').addEventListener('pointerup', e => {
 $('close-selection').onclick = () => { window.getSelection().removeAllRanges(); hideSelection(); };
 $('copy-selection').onclick = async () => { if (!state.selection) return; try { await navigator.clipboard.writeText(state.selection.quote); toast('Passage copied'); } catch { toast('Use your browser’s Copy action to copy this passage.'); } };
 $('note-selection').onclick = () => { if (state.selection) editNote(null, state.selection); };
+$('textbox-selection').onclick = () => { if (state.selection) createTextbox(state.selection).catch(error => toast(message(error))); };
+function textboxPlacement(selection) {
+  const left = Math.min(...selection.rects.map(rect => rect.x));
+  const top = Math.min(...selection.rects.map(rect => rect.y));
+  const right = Math.max(...selection.rects.map(rect => rect.x + rect.w));
+  const w = innerWidth <= 760 ? .38 : .3, h = .14, gap = .018;
+  const x = right + gap + w <= .985 ? right + gap : Math.max(.015, left - gap - w);
+  return { text: '', x, y: clamp(top, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#315c4c' };
+}
+async function createTextbox(selection) {
+  if (!state.project || !selection?.rects.length) return;
+  const project = state.project, data = textboxPlacement(selection);
+  hideSelection(); window.getSelection().removeAllRanges(); $('save-status').textContent = 'Saving text box…';
+  try {
+    const { note } = await api('save-note', { project_id: project.id, page: selection.page, quote: selection.quote, body: encodeTextbox(data), rects: selection.rects, color: 'yellow' });
+    if (state.project !== project) return;
+    state.notes = [note, ...state.notes]; renderNotes(); renderHighlights(); $('save-status').textContent = 'All changes saved';
+    requestAnimationFrame(() => focusTextbox(note));
+  } catch (error) { if (state.project === project) $('save-status').textContent = 'Text box not saved · try again'; throw error; }
+}
+function clearTextboxLayer() {
+  $('textbox-layer').querySelectorAll('.floating-textbox').forEach(element => interact(element).unset());
+  $('textbox-layer').replaceChildren();
+}
+function scheduleTextboxSave(note, data, delay = 600) {
+  note.body = encodeTextbox(data); textboxPending.set(note.id, { note, data: { ...data }, project: state.project });
+  clearTimeout(textboxTimers.get(note.id));
+  $('save-status').textContent = 'Saving text box…';
+  if (delay) textboxTimers.set(note.id, setTimeout(() => flushTextboxSave(note.id).catch(error => toast(message(error))), delay));
+  else return flushTextboxSave(note.id);
+}
+function flushTextboxSave(id) {
+  clearTimeout(textboxTimers.get(id)); textboxTimers.delete(id);
+  const pending = textboxPending.get(id); if (!pending) return textboxSaves.get(id) || Promise.resolve();
+  textboxPending.delete(id);
+  const previous = textboxSaves.get(id) || Promise.resolve();
+  const save = previous.catch(() => {}).then(async () => {
+    const { note, data, project } = pending; if (!project) return;
+    const { note: saved } = await api('save-note', { project_id: project.id, id: note.id, page: note.page, quote: note.quote, body: encodeTextbox(data), rects: note.rects, color: note.color });
+    const current = state.notes.find(item => item.id === saved.id); if (current) Object.assign(current, saved);
+    if (state.project === project && !textboxPending.size) $('save-status').textContent = 'All changes saved';
+  }).catch(error => {
+    if (!textboxPending.has(id)) textboxPending.set(id, pending);
+    if (state.project === pending.project) $('save-status').textContent = 'Text box not saved · keep this page open and retry';
+    throw error;
+  });
+  textboxSaves.set(id, save); return save;
+}
+async function flushAllTextboxSaves() {
+  await Promise.all([...textboxPending.keys()].map(flushTextboxSave));
+  await Promise.all([...textboxSaves.values()]);
+}
+function syncTextboxGeometry(element) {
+  const data = element._textboxData, note = element._textboxNote, layer = $('textbox-layer');
+  if (!data || !note || !layer.clientWidth || !layer.clientHeight) return;
+  data.x = clamp(parseFloat(element.style.left) / layer.clientWidth, 0, 1);
+  data.y = clamp(parseFloat(element.style.top) / layer.clientHeight, 0, 1);
+  data.w = clamp(element.offsetWidth / layer.clientWidth, .08, 1 - data.x);
+  data.h = clamp(element.offsetHeight / layer.clientHeight, .05, 1 - data.y);
+  scheduleTextboxSave(note, data, 0)?.catch(error => toast(message(error)));
+}
+async function deleteTextbox(note) {
+  if (!confirm('Delete this text box and its highlight?')) return;
+  await flushTextboxSave(note.id);
+  await api('delete-note', { id: note.id, project_id: state.project.id });
+  clearTimeout(textboxTimers.get(note.id)); textboxTimers.delete(note.id); textboxPending.delete(note.id); textboxSaves.delete(note.id);
+  state.notes = state.notes.filter(item => item.id !== note.id); renderNotes(); renderHighlights(); toast('Text box deleted');
+}
+async function focusTextbox(note) {
+  if (note.page !== state.page) await changePage(note.page);
+  const element = $('textbox-layer').querySelector(`[data-note-id="${CSS.escape(note.id)}"]`);
+  if (element) { element.querySelector('.textbox-editor').focus(); element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); }
+}
+function renderTextboxes() {
+  clearTextboxLayer(); const layer = $('textbox-layer'), scale = Number.parseFloat(getComputedStyle($('pdf-page')).getPropertyValue('--scale-factor')) || 1;
+  for (const note of state.notes.filter(item => item.page === state.page)) {
+    const data = textboxData(note); if (!data) continue;
+    const box = document.createElement('section'); box.className = 'floating-textbox'; box.dataset.noteId = note.id; box._textboxData = data; box._textboxNote = note;
+    Object.assign(box.style, { left: `${data.x * layer.clientWidth}px`, top: `${data.y * layer.clientHeight}px`, width: `${Math.min(data.w, 1 - data.x) * layer.clientWidth}px`, height: `${Math.min(data.h, 1 - data.y) * layer.clientHeight}px`, color: data.textColor });
+    const bar = document.createElement('div'); bar.className = 'textbox-bar';
+    const handle = document.createElement('button'); handle.type = 'button'; handle.className = 'textbox-handle'; handle.textContent = '•••'; handle.title = 'Drag text box'; handle.setAttribute('aria-label', 'Drag text box');
+    const size = document.createElement('select'); size.className = 'textbox-size'; size.setAttribute('aria-label', 'Text size');
+    for (const value of [10, 12, 14, 16, 18, 20, 24, 28, 32, 36]) { const option = document.createElement('option'); option.value = value; option.textContent = value; option.selected = value === data.fontSize; size.append(option); }
+    const color = document.createElement('input'); color.type = 'color'; color.className = 'textbox-color'; color.value = data.textColor; color.title = 'Text color'; color.setAttribute('aria-label', 'Text color');
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'textbox-delete'; remove.textContent = '×'; remove.title = 'Delete text box'; remove.setAttribute('aria-label', 'Delete text box');
+    const editor = document.createElement('textarea'); editor.className = 'textbox-editor'; editor.value = data.text; editor.maxLength = 20000; editor.placeholder = 'Type your thought…'; editor.setAttribute('aria-label', 'Floating text box'); editor.style.fontSize = `${data.fontSize * scale}px`;
+    bar.append(handle, size, color, remove); box.append(bar, editor); layer.append(box);
+    editor.addEventListener('input', () => { data.text = editor.value; scheduleTextboxSave(note, data); });
+    editor.addEventListener('blur', () => { if (textboxPending.has(note.id)) flushTextboxSave(note.id).catch(error => toast(message(error))); renderNotes(); });
+    size.addEventListener('change', () => { data.fontSize = Number(size.value); editor.style.fontSize = `${data.fontSize * scale}px`; scheduleTextboxSave(note, data, 0)?.catch(error => toast(message(error))); });
+    color.addEventListener('input', () => { data.textColor = color.value; box.style.color = data.textColor; scheduleTextboxSave(note, data); });
+    color.addEventListener('change', () => flushTextboxSave(note.id).catch(error => toast(message(error))));
+    remove.addEventListener('click', () => deleteTextbox(note).catch(error => toast(message(error))));
+    interact(box).draggable({ allowFrom: '.textbox-handle', ignoreFrom: '.textbox-editor,.textbox-size,.textbox-color,.textbox-delete', modifiers: [interact.modifiers.restrictRect({ restriction: 'parent' })], listeners: {
+      move(event) { box.style.left = `${parseFloat(box.style.left) + event.dx}px`; box.style.top = `${parseFloat(box.style.top) + event.dy}px`; },
+      end() { syncTextboxGeometry(box); }
+    }}).resizable({ edges: { left: true, right: true, bottom: true, top: true }, modifiers: [interact.modifiers.restrictEdges({ outer: 'parent' }), interact.modifiers.restrictSize({ min: { width: 110, height: 64 } })], listeners: {
+      move(event) { box.style.width = `${event.rect.width}px`; box.style.height = `${event.rect.height}px`; box.style.left = `${parseFloat(box.style.left) + event.deltaRect.left}px`; box.style.top = `${parseFloat(box.style.top) + event.deltaRect.top}px`; },
+      end() { syncTextboxGeometry(box); }
+    }});
+  }
+}
 function renderHighlights() {
   $('highlight-layer').replaceChildren();
   $('note-hit-layer').replaceChildren();
@@ -294,6 +418,7 @@ function renderHighlights() {
     target.dataset.noteId = note.id; target.setAttribute('aria-label', `Show note from page ${note.page}`);
     Object.assign(target.style, bounds); $('note-hit-layer').append(target);
   }
+  renderTextboxes();
 }
 function hideNotePopover() {
   clearTimeout(notePopoverTimer); $('note-popover').hidden = true;
@@ -308,8 +433,9 @@ function showNotePopover(note, anchor, pinned = false) {
   $('note-popover-page').textContent = `PAGE ${note.page}`;
   $('note-popover-quote').textContent = note.quote || '';
   $('note-popover-quote').hidden = !note.quote;
-  $('note-popover-body').textContent = note.body || (note.quote ? '' : 'No note text.');
-  $('note-popover-body').hidden = !note.body && !!note.quote;
+  const body = visibleBody(note);
+  $('note-popover-body').textContent = body || (note.quote ? '' : 'No note text.');
+  $('note-popover-body').hidden = !body && !!note.quote;
   popup.hidden = false;
   const margin = 8, gap = 10, bounds = anchor.getBoundingClientRect();
   const left = Math.max(margin, Math.min(innerWidth - popup.offsetWidth - margin, bounds.left + bounds.width / 2 - popup.offsetWidth / 2));
@@ -319,7 +445,7 @@ function showNotePopover(note, anchor, pinned = false) {
 }
 function locateNote(note) {
   if (!note) return;
-  const matchesFilter = `${note.quote}\n${note.body}`.toLocaleLowerCase().includes($('note-search').value.toLocaleLowerCase());
+  const matchesFilter = noteSearchText(note).toLocaleLowerCase().includes($('note-search').value.toLocaleLowerCase());
   if (!matchesFilter) { $('note-search').value = ''; renderNotes(); }
   state.activeNoteId = note.id;
   document.querySelectorAll('.note-card.active').forEach(card => card.classList.remove('active'));
@@ -338,7 +464,8 @@ $('note-hit-layer').addEventListener('pointerout', event => {
 $('note-hit-layer').addEventListener('click', event => {
   const target = event.target.closest('.note-hit-target'); if (!target) return;
   const note = state.notes.find(item => item.id === target.dataset.noteId);
-  hideSelection(); showNotePopover(note, target, true); locateNote(note);
+  hideSelection(); locateNote(note);
+  if (textboxData(note)) focusTextbox(note); else showNotePopover(note, target, true);
 });
 $('note-popover').addEventListener('pointerenter', () => clearTimeout(notePopoverTimer));
 $('note-popover').addEventListener('pointerleave', () => { if (!state.notePopoverPinned) notePopoverTimer = setTimeout(hideNotePopover, 180); });
@@ -346,21 +473,24 @@ $('close-note-popover').onclick = hideNotePopover;
 function renderNotes() {
   $('notes-list').replaceChildren(); $('note-count').textContent = $('notes-total').textContent = state.notes.length;
   $('notes-list').hidden = state.notes.length === 0;
-  const query = $('note-search').value.toLocaleLowerCase(); const notes = state.notes.filter(n => `${n.quote}\n${n.body}`.toLocaleLowerCase().includes(query));
+  const query = $('note-search').value.toLocaleLowerCase(); const notes = state.notes.filter(n => noteSearchText(n).toLocaleLowerCase().includes(query));
   $('notes-empty').hidden = state.notes.length > 0;
   for (const note of notes) {
+    const textbox = textboxData(note), bodyText = textbox?.text || (textbox ? '' : note.body);
     const card = document.createElement('article'); card.className = `note-card${note.id === state.activeNoteId ? ' active' : ''}`; card.dataset.noteId = note.id;
     const header = document.createElement('div'); header.className = 'note-card-header'; header.textContent = `PAGE ${note.page} · ${date(note.created_at)}`; card.append(header);
+    if (textbox) { const label = document.createElement('span'); label.className = 'note-card-textbox'; label.textContent = 'FLOATING TEXT BOX'; card.append(label); }
     if (note.quote) { const quote = document.createElement('blockquote'); quote.textContent = note.quote; quote.style.borderColor = `var(--${note.color})`; card.append(quote); }
-    if (note.body) { const body = document.createElement('p'); body.textContent = note.body; card.append(body); }
+    if (bodyText) { const body = document.createElement('p'); body.textContent = bodyText; card.append(body); }
     const actions = document.createElement('div'); actions.className = 'note-card-actions';
-    const jump = document.createElement('button'); jump.textContent = 'Go to passage ↗'; jump.onclick = async () => { $('notes-panel').classList.remove('open'); await changePage(note.page); if (note.rects[0]) $('pdf-scroll').scrollTop = Math.max(0, note.rects[0].y * $('pdf-page').offsetHeight - 100); };
-    const edit = document.createElement('button'); edit.textContent = 'Edit'; edit.onclick = () => editNote(note); actions.append(jump, edit); card.append(actions); $('notes-list').append(card);
+    const jump = document.createElement('button'); jump.textContent = textbox ? 'Show text box ↗' : 'Go to passage ↗'; jump.onclick = async () => { $('notes-panel').classList.remove('open'); if (textbox) await focusTextbox(note); else { await changePage(note.page); if (note.rects[0]) $('pdf-scroll').scrollTop = Math.max(0, note.rects[0].y * $('pdf-page').offsetHeight - 100); } };
+    const edit = document.createElement('button'); edit.textContent = textbox ? 'Delete' : 'Edit'; edit.onclick = () => textbox ? deleteTextbox(note).catch(error => toast(message(error))) : editNote(note); actions.append(jump, edit); card.append(actions); $('notes-list').append(card);
   }
   if (query && !notes.length) { const p = document.createElement('p'); p.className = 'small'; p.textContent = 'No notes match your search.'; $('notes-list').append(p); }
 }
 $('note-search').oninput = renderNotes;
 function editNote(note = null, selection = null) {
+  if (textboxData(note)) return focusTextbox(note);
   if (!state.project) return; state.editing = note ? { ...note } : { page: selection?.page || state.page, rects: selection?.rects || [], quote: selection?.quote || '', body: '', color: 'sage' };
   $('note-quote').value = state.editing.quote; $('note-body').value = state.editing.body; $('note-page-label').textContent = `PAGE ${state.editing.page}`;
   $('quote-label').hidden = $('note-quote').hidden = !state.editing.quote && !state.editing.rects.length;
@@ -386,7 +516,7 @@ $('delete-note').onclick = async () => {
 $('mobile-notes').onclick = () => $('notes-panel').classList.toggle('open'); $('close-notes').onclick = () => $('notes-panel').classList.remove('open');
 $('export-notes').onclick = () => {
   if (!state.project) return;
-  const content = `# ${state.project.title}\n\n` + [...state.notes].sort((a, b) => a.page - b.page).map(n => `## Page ${n.page}\n\n${n.quote ? n.quote.split('\n').map(l => `> ${l}`).join('\n') + '\n\n' : ''}${n.body}\n`).join('\n---\n\n');
+  const content = `# ${state.project.title}\n\n` + [...state.notes].sort((a, b) => a.page - b.page).map(n => `## Page ${n.page}${textboxData(n) ? ' · Floating text box' : ''}\n\n${n.quote ? n.quote.split('\n').map(l => `> ${l}`).join('\n') + '\n\n' : ''}${visibleBody(n)}\n`).join('\n---\n\n');
   const url = URL.createObjectURL(new Blob(['\ufeff', content], { type: 'text/markdown;charset=utf-8' })); const a = document.createElement('a'); a.href = url; a.download = `${state.project.title.replace(/[<>:"/\\|?*]/g, '_')}-notes.md`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 $('ocr-button').onclick = () => { if (state.pdf && !state.busy) $('ocr-dialog').showModal(); }; $('cancel-ocr').onclick = () => $('ocr-dialog').close();

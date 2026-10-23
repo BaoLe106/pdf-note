@@ -7,7 +7,8 @@ A private PDF reading and notes library, built for Traditional Chinese textbooks
 ## Features
 
 - Import each PDF as a project; reopen its saved page and zoom.
-- Select text to open **Copy · Note · Close**. Saving a note persists its highlight and selected passage.
+- Select text to open **Copy · Note · Text box · Close**. Saving a note persists its highlight and selected passage.
+- Add an online floating text box beside a highlight, then drag, resize, recolor, or change its text size without modifying the original PDF.
 - Add standalone notes, edit passages and notes, choose highlight colors, search, and export UTF-8 Markdown.
 - Responsive reader and notes drawer for mobile browsers.
 - PDF.js character maps and fonts for CJK PDFs.
@@ -16,7 +17,7 @@ A private PDF reading and notes library, built for Traditional Chinese textbooks
 
 ## Stack
 
-The frontend is plain HTML, CSS, and JavaScript in `web/`. Dependencies use pinned CDN URLs: PDF.js 4.10.38, Supabase JS 2.57.4, and lazily loaded Tesseract.js 6.0.1. There is **no npm install, frontend framework, or build step**. Google Fonts is optional; system fonts provide fallbacks.
+The frontend is plain HTML, CSS, and JavaScript in `web/`. Dependencies use pinned CDN URLs: PDF.js 4.10.38, Supabase JS 2.57.4, Interact.js 1.10.28, and lazily loaded Tesseract.js 6.0.1. There is **no npm install, frontend framework, or build step**. Google Fonts is optional; system fonts provide fallbacks.
 
 GitHub Actions publishes only `web/` to GitHub Pages. Supabase provides Auth, PostgreSQL, private Storage, and one TypeScript/Deno Edge Function (`library`). Browser data operations go through the Edge Function; authentication uses the official Auth client, and PDFs download through short-lived signed Storage URLs.
 

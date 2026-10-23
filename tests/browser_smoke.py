@@ -15,6 +15,7 @@ OUT.mkdir(exist_ok=True)
 BASE = os.environ.get('PDF_NOTE_TEST_URL', 'http://127.0.0.1:8000')
 TITLE = 'Margin verification textbook'
 NOTE = '繁體中文筆記：學而時習之。\nTiếng Việt: Học và ghi nhớ.\nEnglish: A thought worth keeping.'
+TEXTBOX = 'Floating thought · 浮動文字框 · Ghi chú nổi'
 
 def fixture():
     doc = fitz.open()
@@ -78,6 +79,20 @@ def main():
         expect(page.locator('#note-dialog')).to_be_hidden(); expect(page.locator('.highlight-rect').first).to_be_visible()
         expect(page.locator('.note-card p')).to_have_text(NOTE)
         print('PASS: Chinese selection, Copy/Note/Close, and Unicode note saving', flush=True)
+        select_chinese(page); page.locator('#textbox-selection').click()
+        box = page.locator('.floating-textbox').first; expect(box).to_be_visible()
+        editor = box.locator('.textbox-editor'); editor.fill(TEXTBOX)
+        box.locator('.textbox-size').select_option('20'); box.locator('.textbox-color').fill('#a23e3e')
+        before = box.bounding_box(); handle = box.locator('.textbox-handle').bounding_box()
+        page.mouse.move(handle['x'] + handle['width'] / 2, handle['y'] + handle['height'] / 2)
+        page.mouse.down(); page.mouse.move(handle['x'] + handle['width'] / 2 + 35, handle['y'] + handle['height'] / 2 + 25); page.mouse.up()
+        after_drag = box.bounding_box(); assert after_drag['x'] != before['x'] or after_drag['y'] != before['y']
+        page.mouse.move(after_drag['x'] + after_drag['width'] - 2, after_drag['y'] + after_drag['height'] - 2)
+        page.mouse.down(); page.mouse.move(after_drag['x'] + after_drag['width'] + 28, after_drag['y'] + after_drag['height'] + 18); page.mouse.up()
+        after_resize = box.bounding_box(); assert after_resize['width'] > after_drag['width'] or after_resize['height'] > after_drag['height']
+        page.locator('#page-label').click(); expect(page.locator('#save-status')).to_have_text('All changes saved')
+        expect(page.locator('.note-card').filter(has_text=TEXTBOX)).to_be_visible()
+        print('PASS: floating text box creation, editing, styling, dragging, resizing, and saving', flush=True)
         page.locator('#zoom-in').click(); expect(page.locator('#zoom-fit')).to_have_text('120%')
         expect(page.locator('.highlight-rect').first).to_be_visible()
         page.locator('#next-page').click(); expect(page.locator('#page-input')).to_have_value('2')
@@ -85,23 +100,26 @@ def main():
         page.reload(); expect(page.locator('#upload-status')).to_have_text('')
         page.locator('.project-card').filter(has_text=TITLE).locator('.project-name').click()
         expect(page.locator('#page-input')).to_have_value('2'); expect(page.locator('#zoom-fit')).to_have_text('120%')
-        expect(page.locator('.note-card p')).to_have_text(NOTE)
-        page.locator('.note-card').get_by_text('Go to passage').click(); expect(page.locator('#page-input')).to_have_value('1')
+        expect(page.locator('.note-card').filter(has_text=NOTE)).to_be_visible()
+        page.locator('.note-card').filter(has_text=TEXTBOX).get_by_text('Show text box').click(); expect(page.locator('#page-input')).to_have_value('1')
+        box = page.locator('.floating-textbox').first; expect(box.locator('.textbox-editor')).to_have_value(TEXTBOX)
+        expect(box.locator('.textbox-size')).to_have_value('20'); expect(box.locator('.textbox-color')).to_have_value('#a23e3e')
+        page.locator('.note-card').filter(has_text=NOTE).get_by_text('Go to passage').click(); expect(page.locator('#page-input')).to_have_value('1')
         expect(page.locator('.highlight-rect').first).to_be_visible()
-        print('PASS: page, zoom, highlights, and notes survive reopening', flush=True)
-        page.locator('.note-card').get_by_text('Edit', exact=True).click(); page.locator('#note-body').fill(NOTE + '\n已修改 / Đã sửa / Edited')
+        print('PASS: page, zoom, highlights, notes, and text boxes survive reopening', flush=True)
+        page.locator('.note-card').filter(has_text=NOTE).get_by_text('Edit', exact=True).click(); page.locator('#note-body').fill(NOTE + '\n已修改 / Đã sửa / Edited')
         page.locator('#save-note').click(); expect(page.locator('#note-dialog')).to_be_hidden()
         expect(page.locator('.note-card p')).to_contain_text('已修改')
         with page.expect_download() as download:
             page.locator('#export-notes').click()
-        content = Path(download.value.path()).read_text(encoding='utf-8-sig'); assert NOTE in content
+        content = Path(download.value.path()).read_text(encoding='utf-8-sig'); assert NOTE in content and TEXTBOX in content
         print('PASS: edit and UTF-8 Markdown export', flush=True)
         page.screenshot(path=str(OUT / 'reader-desktop.png'))
         page.set_viewport_size({'width': 402, 'height': 874})
         expect(page.locator('#mobile-notes')).to_be_visible(); expect(page.locator('#notes-panel')).to_be_hidden()
         page.locator('#mobile-notes').click(); expect(page.locator('#notes-panel')).to_be_visible()
         page.locator('#new-note').click(); page.locator('#note-body').fill('手機筆記 · Ghi chú trên điện thoại'); page.locator('#save-note').click()
-        expect(page.locator('#note-dialog')).to_be_hidden(); expect(page.locator('.note-card')).to_have_count(2)
+        expect(page.locator('#note-dialog')).to_be_hidden(); expect(page.locator('.note-card')).to_have_count(3)
         page.screenshot(path=str(OUT / 'notes-mobile.png')); page.locator('#close-notes').click()
         page.wait_for_timeout(500); page.screenshot(path=str(OUT / 'reader-mobile.png'))
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile page overflows viewport'
