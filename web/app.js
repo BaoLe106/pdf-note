@@ -322,7 +322,7 @@ function textboxPlacement(selection) {
   const right = Math.max(...selection.rects.map(rect => rect.x + rect.w));
   const w = innerWidth <= 760 ? .34 : .24, h = .05, gap = .018;
   const x = right + gap + w <= .985 ? right + gap : Math.max(.015, left - gap - w);
-  return { text: '', x, y: clamp(top, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#252e29' };
+  return { text: '', x, y: clamp(top, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#356fa3' };
 }
 async function saveNewTextbox({ page, quote = '', rects = [], data, color = 'yellow' }) {
   if (!state.project) return;
@@ -344,7 +344,7 @@ $('pdf-page').addEventListener('pointerdown', event => {
   if (!state.placingTextbox || event.button !== 0 || event.target.closest('.floating-textbox')) return;
   event.preventDefault(); event.stopPropagation();
   const bounds = $('pdf-page').getBoundingClientRect(), w = innerWidth <= 760 ? .34 : .24, h = .05;
-  const data = { text: '', x: clamp((event.clientX - bounds.left) / bounds.width, .015, 1 - w - .015), y: clamp((event.clientY - bounds.top) / bounds.height, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#252e29' };
+  const data = { text: '', x: clamp((event.clientX - bounds.left) / bounds.width, .015, 1 - w - .015), y: clamp((event.clientY - bounds.top) / bounds.height, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#356fa3' };
   setTextboxPlacement(false); saveNewTextbox({ page: state.page, data, color: 'sage' }).catch(error => toast(message(error)));
 }, true);
 function clearTextboxLayer() {

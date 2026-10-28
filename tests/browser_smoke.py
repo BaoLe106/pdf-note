@@ -99,7 +99,7 @@ def main():
         page.locator('#textbox-tool').click(); expect(page.locator('#textbox-tool')).to_have_attribute('aria-pressed', 'true')
         pdf_box = page.locator('#pdf-page').bounding_box(); page.mouse.click(pdf_box['x'] + pdf_box['width'] * .7, pdf_box['y'] + pdf_box['height'] * .72)
         expect(page.locator('.floating-textbox')).to_have_count(2); expect(page.locator('#textbox-tool')).to_have_attribute('aria-pressed', 'false')
-        standalone = page.locator('.floating-textbox').first; standalone.locator('.textbox-editor').fill('Standalone text box')
+        standalone = page.locator('.floating-textbox').first; expect(standalone.locator('.textbox-color')).to_have_value('#356fa3'); standalone.locator('.textbox-editor').fill('Standalone text box')
         page.locator('#page-label').click(); expect(page.locator('#save-status')).to_have_text('All changes saved')
         assert page.locator('.highlight-rect').count() == highlights_before
         standalone.locator('.textbox-delete').click(); expect(page.locator('.floating-textbox')).to_have_count(1)
