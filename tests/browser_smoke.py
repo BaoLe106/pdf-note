@@ -98,10 +98,11 @@ def main():
         highlights_before = page.locator('.highlight-rect').count()
         page.locator('#textbox-tool').click(); expect(page.locator('#textbox-tool')).to_have_attribute('aria-pressed', 'true')
         pdf_box = page.locator('#pdf-page').bounding_box(); page.mouse.click(pdf_box['x'] + pdf_box['width'] * .7, pdf_box['y'] + pdf_box['height'] * .72)
-        expect(page.locator('.floating-textbox')).to_have_count(2); expect(page.locator('#textbox-tool')).to_have_attribute('aria-pressed', 'false')
+        expect(page.locator('.floating-textbox')).to_have_count(2); expect(page.locator('#textbox-tool')).to_have_attribute('aria-pressed', 'true')
         standalone = page.locator('.floating-textbox').first; expect(standalone.locator('.textbox-color')).to_have_value('#356fa3'); standalone.locator('.textbox-editor').fill('Standalone text box')
         page.locator('#page-label').click(); expect(page.locator('#save-status')).to_have_text('All changes saved')
         assert page.locator('.highlight-rect').count() == highlights_before
+        page.locator('#textbox-tool').click(); expect(page.locator('#textbox-tool')).to_have_attribute('aria-pressed', 'false')
         standalone.locator('.textbox-delete').click(); expect(page.locator('.floating-textbox')).to_have_count(1)
         print('PASS: standalone text box placement anywhere on the PDF without a highlight', flush=True)
         page.locator('#note-type-filter').select_option('textbox'); expect(page.locator('.note-card')).to_have_count(1); expect(page.locator('.note-card')).to_contain_text(TEXTBOX)

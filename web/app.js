@@ -345,7 +345,7 @@ $('pdf-page').addEventListener('pointerdown', event => {
   event.preventDefault(); event.stopPropagation();
   const bounds = $('pdf-page').getBoundingClientRect(), w = innerWidth <= 760 ? .34 : .24, h = .05;
   const data = { text: '', x: clamp((event.clientX - bounds.left) / bounds.width, .015, 1 - w - .015), y: clamp((event.clientY - bounds.top) / bounds.height, .015, 1 - h - .015), w, h, fontSize: 14, textColor: '#356fa3' };
-  setTextboxPlacement(false); saveNewTextbox({ page: state.page, data, color: 'sage' }).catch(error => toast(message(error)));
+  saveNewTextbox({ page: state.page, data, color: 'sage' }).catch(error => toast(message(error)));
 }, true);
 function clearTextboxLayer() {
   $('textbox-layer').querySelectorAll('.floating-textbox').forEach(element => interact(element).unset());
