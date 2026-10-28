@@ -85,6 +85,10 @@ def main():
         page.locator('#note-body').fill(NOTE); page.locator('#save-note').click()
         expect(page.locator('#note-dialog')).to_be_hidden(); expect(page.locator('.highlight-rect').first).to_be_visible()
         expect(page.locator('.note-card p')).to_have_text(NOTE)
+        page.locator('.note-hit-target').first.hover(); expect(page.locator('#note-popover')).to_be_visible()
+        assert page.locator('#note-popover-quote').evaluate("el => getComputedStyle(el).fontSize") == '16.5px'
+        assert page.locator('#note-popover-body').evaluate("el => getComputedStyle(el).fontSize") == '18px'
+        page.locator('#close-note-popover').click()
         print('PASS: Chinese selection, Copy/Note/Close, and Unicode note saving', flush=True)
         select_chinese(page); page.locator('#textbox-selection').click()
         box = page.locator('.floating-textbox').first; expect(box).to_be_visible()
