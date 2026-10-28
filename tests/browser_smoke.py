@@ -68,7 +68,14 @@ def main():
         expect(page.locator('#reader-view')).to_be_visible()
         expect(page.locator('#text-layer span').first).to_be_visible()
         expect(page.locator('#reader-title')).to_have_text(TITLE)
-        print('PASS: PDF upload, private download, and text rendering', flush=True)
+        assert '#/pdf/' in page.url; pdf_url = page.url; pdf_id = pdf_url.rsplit('/', 1)[-1]
+        anonymous = browser.new_context(viewport={'width': 1000, 'height': 700}); anonymous_page = anonymous.new_page(); open_requests = []
+        anonymous_page.on('request', lambda request: open_requests.append(request.url) if 'action=open' in request.url else None)
+        anonymous_page.goto(pdf_url); expect(anonymous_page.locator('#login-view')).to_be_visible(); expect(anonymous_page.locator('#reader-view')).to_be_hidden()
+        anonymous_status = anonymous_page.evaluate("""async id => { const c = window.PDF_NOTE_CONFIG; return (await fetch(`${c.supabaseUrl}/functions/v1/library?action=open`, {method: 'POST', headers: {apikey: c.supabaseAnonKey, 'Content-Type': 'application/json'}, body: JSON.stringify({id})})).status }""", pdf_id)
+        assert anonymous_status == 401 and len(open_requests) == 1
+        anonymous.close()
+        print('PASS: UUID document route, server-side anonymous denial, private download, and text rendering', flush=True)
         select_chinese(page)
         page.locator('#copy-selection').click()
         clipboard = page.evaluate('navigator.clipboard.readText()')
@@ -114,16 +121,17 @@ def main():
         expect(page.locator('.highlight-rect').first).to_be_visible()
         page.locator('#next-page').click(); expect(page.locator('#page-input')).to_have_value('2')
         expect(page.locator('#save-status')).to_have_text('All changes saved')
-        page.reload(); expect(page.locator('#upload-status')).to_have_text('')
-        page.locator('.project-card').filter(has_text=TITLE).locator('.project-name').click()
+        page.reload(); expect(page.locator('#reader-view')).to_be_visible(); expect(page.locator('#text-layer span').first).to_be_visible(); assert page.url == pdf_url
         expect(page.locator('#page-input')).to_have_value('2'); expect(page.locator('#zoom-fit')).to_have_text('120%')
+        page.go_back(); expect(page.locator('#reader-view')).to_be_hidden(); expect(page.locator('#upload-status')).to_have_text(''); assert '#/pdf/' not in page.url
+        page.go_forward(); expect(page.locator('#reader-view')).to_be_visible(); expect(page.locator('#page-input')).to_have_value('2')
         expect(page.locator('.note-card').filter(has_text=NOTE)).to_be_visible()
         page.locator('.note-card').filter(has_text=TEXTBOX).get_by_text('Show text box').click(); expect(page.locator('#page-input')).to_have_value('1')
         box = page.locator('.floating-textbox').first; expect(box.locator('.textbox-editor')).to_have_value(TEXTBOX)
         expect(box.locator('.textbox-size')).to_have_value('20'); expect(box.locator('.textbox-color')).to_have_value('#b64b4b')
         page.locator('.note-card').filter(has_text=NOTE).get_by_text('Go to passage').click(); expect(page.locator('#page-input')).to_have_value('1')
         expect(page.locator('.highlight-rect').first).to_be_visible()
-        print('PASS: page, zoom, highlights, notes, and text boxes survive reopening', flush=True)
+        print('PASS: routed refresh and browser navigation preserve page, zoom, highlights, notes, and text boxes', flush=True)
         page.locator('.note-card').filter(has_text=NOTE).get_by_text('Edit', exact=True).click(); page.locator('#note-body').fill(NOTE + '\n已修改 / Đã sửa / Edited')
         page.locator('#save-note').click(); expect(page.locator('#note-dialog')).to_be_hidden()
         expect(page.locator('.note-card p')).to_contain_text('已修改')
@@ -154,7 +162,7 @@ def main():
             expect(page.locator('#text-layer')).to_have_class('ocr-layer')
             expect(page.locator('#text-layer span').first).to_be_visible()
             print('PASS: real on-device OCR and persistence', flush=True)
-        page.locator('#back-button').click(); expect(page.locator('#reader-view')).to_be_hidden()
+        page.locator('#back-button').click(); expect(page.locator('#reader-view')).to_be_hidden(); assert '#/pdf/' not in page.url
         page.evaluate("""() => {const key = Object.keys(localStorage).find(k => k.endsWith('-auth-token')); const s = JSON.parse(localStorage.getItem(key)); window.oldRefresh = s.refresh_token; s.expires_at = 1; localStorage.setItem(key, JSON.stringify(s));} """)
         old_refresh = page.evaluate('window.oldRefresh'); page.reload(); expect(page.locator('#app-view')).to_be_visible(); expect(page.locator('#upload-status')).to_have_text('')
         new_refresh = page.evaluate("JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.endsWith('-auth-token')))).refresh_token")

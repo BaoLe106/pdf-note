@@ -7,6 +7,7 @@ A private PDF reading and notes library, built for Traditional Chinese textbooks
 ## Features
 
 - Import each PDF as a project; reopen its saved page and zoom.
+- Each open document has a refresh-safe `#/pdf/<project-uuid>` URL. Refreshing or using browser Back/Forward restores the matching private document.
 - Select text to open **Copy · Note · Text box · Close**. Saving a note persists its highlight and selected passage.
 - Toggle **Text box** on, click or tap anywhere to place as many boxes as needed, then toggle it off or press Escape. Type in the default blue, drag from the top grip, resize from the bottom-right corner, choose black/red/blue text, or change its text size without modifying the original PDF. Textboxes use a compact light border, with editing controls shown only on hover or focus. A textbox can also be linked to selected text.
 - Add standalone notes, edit passages and notes, choose highlight colors, search or filter by note type/color, and export UTF-8 Markdown.
@@ -38,6 +39,7 @@ flowchart LR
 - Public registration is disabled in the hosted Auth configuration. The login form maps `BaoLe106` to its internal Auth email alias.
 - The API verifies every JWT with `auth.getUser()` and checks the sole account in `app_owner`.
 - Every document operation checks ownership. Notes and OCR are scoped to an owned document.
+- Document URLs contain only a project UUID. Loading one still requires the Edge Function to validate the JWT and project owner before returning a short-lived private Storage URL; possessing the URL alone grants no PDF access.
 - All application tables enable RLS and revoke direct `anon` / `authenticated` access. No client Storage policies exist; the PDF bucket is private.
 - Function gateway `verify_jwt = false` is intentional: validation occurs inside the handler and supports Supabase's current signing keys. It does **not** allow unauthenticated data access.
 - CORS permits the deployed Pages origin and local development origins. Saved user text is rendered using `textContent`.

@@ -6,11 +6,12 @@ const $ = id => document.getElementById(id);
 const config = window.PDF_NOTE_CONFIG;
 const client = config.supabaseUrl && config.supabaseAnonKey ? createClient(config.supabaseUrl, config.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } }) : null;
 const state = { projects: [], project: null, pdf: null, notes: [], page: 1, zoom: 1, selection: null, editing: null, activeNoteId: null, notePopoverId: null, notePopoverPinned: false, placingTextbox: false, ocr: {}, render: 0, busy: false, loading: false, session: null };
-let renderTask, textTask, saveTimer, selectionTimer, toastTimer, resizeTimer, notePopoverTimer, documentGeneration = 0;
+let renderTask, textTask, saveTimer, selectionTimer, toastTimer, resizeTimer, notePopoverTimer, routeTimer, documentGeneration = 0;
 let positionQueue = Promise.resolve();
 const textboxTimers = new Map(), textboxSaves = new Map(), textboxPending = new Map();
 const TEXTBOX_PREFIX = '[[MARGIN_TEXTBOX_V1]]';
 const TEXTBOX_COLORS = [['#252e29', 'Black'], ['#b64b4b', 'Red'], ['#356fa3', 'Blue']];
+const PDF_ROUTE = /^#\/pdf\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 const formatSize = n => `${(n / 1048576).toFixed(1)} MB`;
 const MAX_PDF_BYTES = 100 * 1048576;
 const date = value => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -33,6 +34,12 @@ function textboxData(note) {
 const encodeTextbox = value => TEXTBOX_PREFIX + JSON.stringify(value);
 function visibleBody(note) { const textbox = textboxData(note); return textbox ? textbox.text : note.body; }
 const noteSearchText = note => `${note.quote}\n${visibleBody(note)}`;
+const routedProjectId = () => location.hash.match(PDF_ROUTE)?.[1]?.toLowerCase() || null;
+function setProjectRoute(id) {
+  if (routedProjectId() === id.toLowerCase()) return;
+  history.pushState({ projectId: id }, '', `${location.pathname}${location.search}#/pdf/${id}`);
+}
+function clearProjectRoute() { history.replaceState({}, '', `${location.pathname}${location.search}`); }
 async function api(action, body = {}, onUploadProgress = null) {
   if (!client) throw new Error('The library is being set up. Please try again after deployment.');
   const { data: { session } } = await client.auth.getSession();
@@ -73,7 +80,7 @@ $('login-form').addEventListener('submit', async event => {
     if ($('username').value.trim().toLowerCase() !== 'baole106') throw new Error('Incorrect username or password.');
     const { data, error } = await client.auth.signInWithPassword({ email: config.loginEmail, password: $('password').value });
     if (error) throw new Error('Incorrect username or password.');
-    $('password').value = ''; displaySession(data.session); await loadProjects();
+    $('password').value = ''; displaySession(data.session); await loadProjects(); await applyProjectRoute();
   } catch (error) { $('login-error').textContent = message(error); } finally { $('login-button').disabled = false; }
 });
 $('logout-button').onclick = async () => {
@@ -81,8 +88,8 @@ $('logout-button').onclick = async () => {
 };
 async function loadProjects() {
   $('upload-status').textContent = 'Opening your library…';
-  try { const result = await api('projects'); state.projects = result.projects; renderProjects(); $('upload-status').textContent = ''; }
-  catch (error) { $('upload-status').textContent = message(error); }
+  try { const result = await api('projects'); state.projects = result.projects; renderProjects(); $('upload-status').textContent = ''; return true; }
+  catch (error) { $('upload-status').textContent = message(error); return false; }
 }
 function renderProjects() {
   const query = $('project-search').value.toLocaleLowerCase();
@@ -173,8 +180,10 @@ $('file-input').onchange = async () => {
   }
   finally { preview?.destroy(); $('upload-button').disabled = $('empty-upload').disabled = false; }
 };
-async function openProject(project) {
-  if (state.loading) return; state.loading = true; const generation = ++documentGeneration;
+async function openProject(project, updateRoute = true) {
+  if (state.loading) return; if (updateRoute) setProjectRoute(project.id);
+  state.loading = true; const generation = ++documentGeneration;
+  document.title = `${project.title} · Margin`;
   $('reader-view').hidden = false; $('reader-title').textContent = project.title; $('reader-message').textContent = 'Opening your textbook…';
   $('pdf-page').hidden = true; $('notes-list').replaceChildren(); $('notes-empty').hidden = false;
   try {
@@ -213,10 +222,34 @@ function closeReader() {
   for (const timer of textboxTimers.values()) clearTimeout(timer);
   textboxTimers.clear(); textboxPending.clear(); textboxSaves.clear();
   renderTask?.cancel(); textTask?.cancel(); state.pdf?.destroy(); state.pdf = null; state.project = null; state.notes = []; state.ocr = {};
+  document.title = 'Margin';
   $('reader-view').hidden = true; $('notes-panel').classList.remove('open'); $('note-dialog').close(); $('ocr-dialog').close();
 }
-$('back-button').onclick = async () => { if (state.busy) return toast('Please wait for text recognition to finish.'); try { await flushAllTextboxSaves(); await flushPosition(); closeReader(); await loadProjects(); } catch (e) { toast(message(e)); } };
+$('back-button').onclick = async () => { if (state.busy) return toast('Please wait for text recognition to finish.'); try { await flushAllTextboxSaves(); await flushPosition(); clearProjectRoute(); closeReader(); await loadProjects(); } catch (e) { toast(message(e)); } };
 $('library-button').onclick = () => $('back-button').click();
+async function applyProjectRoute() {
+  if (!state.session) return;
+  if (state.loading) return scheduleProjectRoute(100);
+  const id = routedProjectId();
+  if (!id) {
+    if (location.hash) clearProjectRoute();
+    if (state.project) { await flushAllTextboxSaves(); await flushPosition(); closeReader(); await loadProjects(); }
+    return;
+  }
+  if (state.project?.id.toLowerCase() === id) return;
+  const project = state.projects.find(item => item.id.toLowerCase() === id);
+  if (!project) {
+    if (state.project) { await flushAllTextboxSaves(); await flushPosition(); closeReader(); }
+    clearProjectRoute(); toast('This document was not found or is not available to this account.'); return;
+  }
+  if (state.project) { await flushAllTextboxSaves(); await flushPosition(); closeReader(); }
+  await openProject(project, false);
+}
+function scheduleProjectRoute(delay = 0) {
+  clearTimeout(routeTimer); routeTimer = setTimeout(() => applyProjectRoute().catch(error => toast(message(error))), delay);
+}
+window.addEventListener('popstate', () => scheduleProjectRoute());
+window.addEventListener('hashchange', () => scheduleProjectRoute());
 async function renderPage() {
   if (!state.pdf) return;
   const sequence = ++state.render; hideSelection();
@@ -581,5 +614,5 @@ function renderOCR(words) {
 document.addEventListener('keydown', event => { if (event.key === 'Escape') { hideSelection(); setTextboxPlacement(false); $('notes-panel').classList.remove('open'); } if (!state.pdf || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.querySelector('dialog[open]')) return; if (event.key === 'ArrowRight') changePage(state.page + 1); if (event.key === 'ArrowLeft') changePage(state.page - 1); });
 if (client) {
   client.auth.onAuthStateChange((event, session) => { if (event === 'SIGNED_OUT') displaySession(null); else state.session = session; });
-  const { data: { session } } = await client.auth.getSession(); displaySession(session); if (session) await loadProjects();
+  const { data: { session } } = await client.auth.getSession(); displaySession(session); if (session && await loadProjects()) await applyProjectRoute();
 }
