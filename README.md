@@ -46,7 +46,7 @@ flowchart LR
 
 ## Free plan and limits
 
-The deployed Supabase organization uses Free, and GitHub Pages serves the public source repository. The PDFs and notes remain private. No paid services or OCR APIs are used.
+The deployed Supabase organization uses Free, and GitHub Pages serves the public source repository. PDFs, notes, homework, and answers remain private. PDF-page OCR runs locally. Chinese practice uses the separately billed OpenAI API for exercise generation, answer feedback, and a small number of image readings.
 
 - Application upload limit: **100 MiB per PDF** (shown as 100 MB). Larger files are rejected before reading or uploading, with an error popup.
 - An upload progress bar shows the filename, percentage, and checking/uploading/saving stages. Transferred bytes drive the percentage for both regular and large uploads.
@@ -57,6 +57,29 @@ The deployed Supabase organization uses Free, and GitHub Pages serves the public
 - Supabase Free includes a 500 MB database and 1 GB Storage; bandwidth and function quotas also apply. Free projects can pause after inactivity, requiring restoration from the dashboard. Check [current Supabase plan limits](https://supabase.com/pricing).
 - OCR accuracy depends on scan quality, typeface, and layout. Vertical writing and mixed columns can have imperfect reading order. OCR runs one page at a time to limit mobile memory usage.
 - Encrypted PDFs must have their password removed before import. Internet access is needed for authentication, saving, downloads, and CDN dependencies. This version is not an offline app.
+
+## Chinese expression practice
+
+Open `homework.html` or choose **Chinese practice** from the library. The same Supabase login protects both pages. There is no microphone, recording, or voice mode.
+
+- Each 14-day cycle contains 60 typed exercises, five each in 12 formats: everyday replies, organizing ideas, reading/responding, rewriting, storytelling, opinions, dialogue, summarizing, tone, comparison, clarification, and transfer. The emphasis is clear ideas and natural conversational Traditional Chinese.
+- Guidance and feedback include Traditional Chinese and English. Every exercise supplies optional vocabulary, usage examples, and source labels. Source terms are checked against the captured material before publication.
+- Drafts save to the account. Revision numbers prevent conflicting tabs overwriting newer work. Reviewed attempts are retained separately; completion is an explicit learner action. Feedback scores are tentative writing-coaching signals, not spoken fluency measurements.
+- Cycles start on the first visit/import date in Asia/Taipei and recur every 14 days. Supabase Cron invokes the worker every five minutes; opening the page also resumes preparation. One database lease per owner prevents concurrent generation. Five questions are committed at a time; three consecutive failures pause a cycle until Retry is selected.
+- Each course freezes a source snapshot and prompt/model version. Later source updates apply to future courses. Previous answers' next-step feedback informs generation. Only selected excerpts are sent per batch, not entire PDFs.
+- AI requests have a database-enforced limit of 80 per UTC day, including failed requests, plus output and timeout limits. Default models are `gpt-4.1` for exercises/feedback and `gpt-4.1-mini` for vision; configure `HOMEWORK_MODEL` and `HOMEWORK_VISION_MODEL` in Supabase to change them. Token usage is recorded in `practice_usage`.
+
+`scripts/sync_practice_sheet.py` reads all visible tabs in the configured public Google Sheet, preserving row and embedded-image references. The daily GitHub Actions workflow extracts every embedded image with Tesseract (`chi_tra+eng+vie`), uses OpenAI vision for at most three new images, and caches results by SHA-256. OCR text is explicitly marked uncertain. The raw workbook and images are temporary runner files and are not uploaded to Supabase Storage or committed to Git. Failed images remain pending for the next run. The source tab lists import counts; suggested vocabulary lists the words used in the selected course.
+
+Required secrets:
+
+- Supabase: `OPENAI_API_KEY`, `HOMEWORK_WORKER_SECRET`.
+- GitHub Actions: the same `HOMEWORK_WORKER_SECRET` for source import only. The OpenAI key stays in Supabase.
+- Supabase Vault: `homework_worker_secret`, used by the private scheduled worker. The public anon key cannot invoke importer actions.
+
+Apply `supabase/migrations/202611220001_practice.sql`, then deploy `homework` with the CLI. Configure the `margin-practice-worker` Cron job to POST to `/functions/v1/homework?action=work` with the Vault secret in `x-worker-secret`, a JSON `{}` body, and a 120-second HTTP timeout. The production Cron schedule is `*/5 * * * *`. Free project pausing can interrupt scheduled work; the page resumes generation once the project is available again. The sheet import can also be run manually from GitHub Actions.
+
+Verification: `deno test tests/practice_core_test.ts` checks format coverage and content validation; `uv run --with playwright python3 tests/practice_browser.py` (with `web/` served on port 8000 and Chrome available) exercises typed answers, bilingual help, feedback, safe text rendering, saving, stale-draft protection, navigation, and responsive layouts against mocked HTTP responses.
 
 ## Local development
 
@@ -81,7 +104,7 @@ Deploy an updated function with an authenticated Supabase CLI:
 supabase functions deploy library --project-ref etyubwsyrfzteckfmhtt --use-api
 ```
 
-Both migrations have already been applied. Do not rerun them on the existing database; add a new migration for schema changes. The deployed owner was provisioned through the Auth Admin API and inserted into `app_owner`. The account password is intentionally absent from this repository.
+The listed library migrations and the practice migration have already been applied. Do not rerun them on the existing database; add a new migration for schema changes. The deployed owner was provisioned through the Auth Admin API and inserted into `app_owner`. The account password is intentionally absent from this repository.
 
 ## Verification
 

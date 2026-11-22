@@ -1,0 +1,29 @@
+name: Sync Chinese practice sources
+on:
+  schedule:
+    - cron: '20 19 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: practice-source-sync
+  cancel-in-progress: false
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install OCR
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-chi-tra tesseract-ocr-eng tesseract-ocr-vie
+          pip install Pillow==11.3.0
+      - name: Read text and embedded images
+        env:
+          HOMEWORK_URL: https://etyubwsyrfzteckfmhtt.supabase.co/functions/v1/homework
+          HOMEWORK_WORKER_SECRET: ${{ secrets.HOMEWORK_WORKER_SECRET }}
+        run: python scripts/sync_practice_sheet.py --workers 2 --vision-limit 3

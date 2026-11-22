@@ -3,6 +3,13 @@ import * as pdfjs from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pd
 import interact from 'https://cdn.jsdelivr.net/npm/interactjs@1.10.28/+esm';
 pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
+const practiceLink = document.createElement('a');
+practiceLink.href = 'homework.html'; practiceLink.className = 'nav-item'; practiceLink.textContent = '✎  Chinese practice';
+practiceLink.style.textDecoration = 'none';
+$('library-button').after(practiceLink);
+const practiceHeaderLink = practiceLink.cloneNode(true);
+practiceHeaderLink.className = 'text-button'; practiceHeaderLink.textContent = 'Chinese practice / 中文練習 →';
+$('library-view').querySelector('.topbar-detail').replaceWith(practiceHeaderLink);
 const config = window.PDF_NOTE_CONFIG;
 const client = config.supabaseUrl && config.supabaseAnonKey ? createClient(config.supabaseUrl, config.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } }) : null;
 const state = { projects: [], project: null, pdf: null, notes: [], page: 1, zoom: 1, selection: null, editing: null, activeNoteId: null, notePopoverId: null, notePopoverPinned: false, placingTextbox: false, ocr: {}, render: 0, busy: false, loading: false, session: null };
@@ -227,6 +234,12 @@ function closeReader() {
 }
 $('back-button').onclick = async () => { if (state.busy) return toast('Please wait for text recognition to finish.'); try { await flushAllTextboxSaves(); await flushPosition(); clearProjectRoute(); closeReader(); await loadProjects(); } catch (e) { toast(message(e)); } };
 $('library-button').onclick = () => $('back-button').click();
+practiceLink.onclick = async event => {
+  event.preventDefault();
+  if (state.busy) return toast('Please wait for text recognition to finish.');
+  try { await flushAllTextboxSaves(); await flushPosition(); location.href = practiceLink.href; }
+  catch (error) { toast(message(error)); }
+};
 async function applyProjectRoute() {
   if (!state.session) return;
   if (state.loading) return scheduleProjectRoute(100);
